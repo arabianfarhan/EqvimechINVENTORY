@@ -76,7 +76,27 @@ def inject_theme():
 
         /* ── Inputs ── */
         .stTextInput input, .stTextArea textarea, .stNumberInput input {
+            border: 1.8px solid #cbd5e1 !important;
             border-radius: 8px !important;
+            background: #ffffff !important;
+            color: #0f172a !important;
+            box-shadow: inset 0 1px 2px rgba(15,23,42,0.04) !important;
+            transition: border-color 0.15s, box-shadow 0.15s !important;
+        }
+        .stTextInput input:focus, .stTextArea textarea:focus, .stNumberInput input:focus {
+            border-color: #0d9488 !important;
+            box-shadow: 0 0 0 3px rgba(13,148,136,0.15), inset 0 1px 2px rgba(15,23,42,0.04) !important;
+            outline: none !important;
+        }
+        /* selectbox / multiselect borders */
+        div[data-baseweb="select"] > div {
+            border: 1.8px solid #cbd5e1 !important;
+            border-radius: 8px !important;
+            background: #ffffff !important;
+        }
+        div[data-baseweb="select"] > div:focus-within {
+            border-color: #0d9488 !important;
+            box-shadow: 0 0 0 3px rgba(13,148,136,0.15) !important;
         }
         .stTextInput label, .stTextArea label, .stNumberInput label,
         .stSelectbox label, .stCheckbox label, .stRadio label {
@@ -139,21 +159,50 @@ def inject_theme():
         .p-zero    { background: #fee2e2; color: #b91c1c; }
 
         /* ── Metric card ── */
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.85rem;
+            margin-bottom: 1.2rem;
+        }
         .metric-card {
             background: #ffffff;
             border: 1px solid #e2e8f0;
-            border-radius: 12px;
-            padding: 0.9rem 1rem;
-            margin-bottom: 0.6rem;
-            box-shadow: 0 1px 3px rgba(15,23,42,0.05);
+            border-radius: 16px;
+            padding: 1.3rem 1.4rem;
+            box-shadow: 0 2px 8px rgba(15,23,42,0.07);
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
         }
-        .metric-label { color: #94a3b8; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
-        .metric-value { color: #0f172a; font-size: 1.6rem; font-weight: 800; margin-top: 0.1rem; }
+        .metric-card.mc-accent { border-left: 4px solid #0d9488; }
+        .metric-card.mc-danger { border-left: 4px solid #dc2626; }
+        .metric-card.mc-warn   { border-left: 4px solid #ea580c; }
+        .metric-card.mc-issued { border-left: 4px solid #6366f1; }
+        .metric-card.mc-deposit{ border-left: 4px solid #0ea5e9; }
+        .metric-icon  { font-size: 1.4rem; line-height: 1; }
+        .metric-label { color: #94a3b8; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.09em; }
+        .metric-value { color: #0f172a; font-size: 2rem; font-weight: 800; line-height: 1; }
         .m-accent { color: #0d9488 !important; }
         .m-warn   { color: #ea580c !important; }
         .m-danger { color: #dc2626 !important; }
+        .m-issued { color: #6366f1 !important; }
+        .m-deposit{ color: #0ea5e9 !important; }
 
-        /* ── Section label ── */
+        /* ── Low-stock banner ── */
+        .low-stock-banner {
+            background: #fff7ed;
+            border: 1.5px solid #fb923c;
+            border-radius: 10px;
+            padding: 0.55rem 1rem;
+            margin-bottom: 0.8rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.9rem;
+            font-weight: 700;
+            color: #c2410c;
+        }
         .section-label {
             color: #94a3b8;
             font-size: 0.72rem;
@@ -233,10 +282,15 @@ def sidebar_identity():
 def items_page(conn):
     search = st.text_input(
         "Search items",
-        placeholder="🔍  Name, item ID, description, location…",
+        placeholder="🔍  Type item name, ID or description…",
         key="items_search",
         label_visibility="collapsed",
     )
+
+    if not search.strip():
+        st.caption("Start typing above to find items, or type a space to show all.")
+        return
+
     parts = get_parts(conn, query=search.strip())
 
     if not parts:
@@ -279,6 +333,7 @@ def pick_material_page(conn):
                     &nbsp;|&nbsp; New balance:
                     <strong>{done['balance']} {done['unit']}</strong>
                 </div>
+                {"<div style='margin-top:.6rem;font-size:0.9rem;color:#b45309;font-weight:700'>↩ Returnable — item must be returned to store</div>" if done.get('returnable') else ""}
             </div>
             """,
             unsafe_allow_html=True,
@@ -294,23 +349,46 @@ def pick_material_page(conn):
         st.info("No active items available for issue.")
         return
 
-    part_id = st.session_state.get("pick_part")
-    part_ids = [p["part_id"] for p in available]
-    options = [None] + part_ids
-    default_index = (part_ids.index(part_id) + 1) if part_id and part_id in part_ids else 0
-
-    selected_id = st.selectbox(
-        "Select item",
-        options,
-        index=default_index,
-        format_func=lambda v: "— select an item —" if v is None else (
-            lambda p: f"{p['name']}" + (f"  —  {p['description']}" if p['description'] else "")
-        )(get_part(conn, v)),
-        key="pick_select",
+    # ── Search box ───────────────────────────────────────────────────────
+    search_term = st.text_input(
+        "Search item",
+        placeholder="Type item name, ID or description…",
+        key="pick_search",
+        label_visibility="collapsed",
     )
 
-    if selected_id is None:
+    def _label(p):
+        return f"{p['name']}" + (f"  —  {p['description']}" if p['description'] else "")
+
+    if search_term.strip():
+        q = search_term.strip().lower()
+        matches = [
+            p for p in available
+            if q in p["name"].lower()
+            or q in p["part_id"].lower()
+            or q in (p["description"] or "").lower()
+        ]
+    else:
+        matches = []
+
+    if not matches and search_term.strip():
+        st.info("No items matched — try a different search term.")
         return
+
+    if not matches:
+        st.caption("Start typing above to find an item.")
+        return
+
+    if len(matches) == 1:
+        selected_id = matches[0]["part_id"]
+    else:
+        selected_id = st.selectbox(
+            "Matching items",
+            [p["part_id"] for p in matches],
+            format_func=lambda v: _label(get_part(conn, v)),
+            key="pick_select",
+            label_visibility="collapsed",
+        )
 
     part = get_part(conn, selected_id)
 
@@ -357,18 +435,37 @@ def pick_material_page(conn):
         key="pick_serials",
         label_visibility="collapsed",
     )
-    purpose = st.text_input("Purpose / Usage", placeholder="e.g. UTM-200 Assembly", key="pick_purpose")
+    purpose_options = st.multiselect(
+        "Purpose / Usage *",
+        ["Assembly", "Checking", "Testing", "Other"],
+        key="pick_purpose_opts",
+    )
+    purpose_other = ""
+    if "Other" in purpose_options:
+        purpose_other = st.text_input(
+            "Specify other purpose",
+            placeholder="e.g. UTM-200 calibration",
+            key="pick_purpose_other",
+        )
+    returnable = st.checkbox("↩  Returnable (material will be brought back)", key="pick_returnable")
     note = st.text_input("Note (optional)", placeholder="e.g. Urgent – project deadline", key="pick_note")
 
     if st.button("✅  Confirm Material Issue", key="confirm_pick"):
         serials = [s.strip() for s in serials_raw.replace("\n", ",").split(",") if s.strip()]
+        purpose_parts = [p for p in purpose_options if p != "Other"]
+        if purpose_other.strip():
+            purpose_parts.append(purpose_other.strip())
+        purpose_str = ", ".join(purpose_parts)
+
         if len(serials) != int(qty):
             st.error(
                 f"You entered {len(serials)} serial number(s) but picked {int(qty)} unit(s). "
                 "One serial number per unit is required."
             )
-        elif not purpose.strip():
-            st.error("Purpose / Usage is required.")
+        elif not purpose_options:
+            st.error("Please select at least one Purpose / Usage.")
+        elif "Other" in purpose_options and not purpose_other.strip():
+            st.error("Please specify the other purpose.")
         else:
             try:
                 new_balance = pick_material(
@@ -377,14 +474,16 @@ def pick_material_page(conn):
                     serials,
                     st.session_state["user"],
                     st.session_state["role"],
-                    purpose.strip(),
+                    purpose_str,
                     note.strip(),
+                    returnable=returnable,
                 )
                 st.session_state["pick_done"] = {
                     "part": part["name"],
                     "qty": int(qty),
                     "balance": new_balance,
                     "unit": part["unit"],
+                    "returnable": returnable,
                 }
                 safe_rerun()
             except Exception as exc:
@@ -397,14 +496,47 @@ def deposit_stock_page(conn):
         st.info("Add items via Item Master before depositing stock.")
         return
 
-    selected_id = st.selectbox(
-        "Select item",
-        [p["part_id"] for p in parts],
-        format_func=lambda v: (
-            lambda p: f"{p['name']}" + (f"  —  {p['description']}" if p['description'] else "")
-        )(get_part(conn, v)),
-        key="deposit_select",
+    # ── Search box (same pattern as Pick) ────────────────────────────────
+    search_term = st.text_input(
+        "Search item",
+        placeholder="Type item name, ID or description…",
+        key="deposit_search",
+        label_visibility="collapsed",
     )
+
+    def _dep_label(p):
+        return f"{p['name']}" + (f"  —  {p['description']}" if p['description'] else "")
+
+    if search_term.strip():
+        q = search_term.strip().lower()
+        matches = [
+            p for p in parts
+            if q in p["name"].lower()
+            or q in p["part_id"].lower()
+            or q in (p["description"] or "").lower()
+        ]
+    else:
+        matches = []
+
+    if not matches and search_term.strip():
+        st.info("No items matched — try a different search term.")
+        return
+
+    if not matches:
+        st.caption("Start typing above to find an item.")
+        return
+
+    if len(matches) == 1:
+        selected_id = matches[0]["part_id"]
+    else:
+        selected_id = st.selectbox(
+            "Matching items",
+            [p["part_id"] for p in matches],
+            format_func=lambda v: _dep_label(get_part(conn, v)),
+            key="deposit_select",
+            label_visibility="collapsed",
+        )
+
     part = get_part(conn, selected_id)
 
     st.markdown(
@@ -425,24 +557,36 @@ def deposit_stock_page(conn):
 
     with st.form("deposit_form"):
         qty = st.number_input("Quantity to deposit", min_value=1, value=1, step=1)
-        note = st.text_input("Note / GRN reference", placeholder="e.g. GRN-001 / Vendor invoice")
-        if st.form_submit_button("📥  Confirm Deposit"):
-            try:
-                new_balance = deposit_stock(
-                    conn,
-                    selected_id,
-                    int(qty),
-                    st.session_state["user"],
-                    st.session_state["role"],
-                    note.strip(),
-                )
-                st.success(
-                    f"✅  Deposited {int(qty)} × {part['name']}  |  "
-                    f"New balance: **{new_balance} {part['unit']}**"
-                )
-                safe_rerun()
-            except Exception as exc:
-                st.error(str(exc))
+        note = st.text_input("Note / GRN reference *", placeholder="e.g. GRN-001 / Vendor invoice (required)")
+        col_save, col_cancel = st.columns([1, 1])
+        submitted = col_save.form_submit_button("📥  Confirm Deposit", use_container_width=True)
+        cancelled = col_cancel.form_submit_button("✖  Cancel", use_container_width=True, type="secondary")
+
+        if cancelled:
+            st.session_state.pop("deposit_search", None)
+            st.session_state.pop("deposit_select", None)
+            safe_rerun()
+
+        if submitted:
+            if not note.strip():
+                st.error("Note / GRN reference is required.")
+            else:
+                try:
+                    new_balance = deposit_stock(
+                        conn,
+                        selected_id,
+                        int(qty),
+                        st.session_state["user"],
+                        st.session_state["role"],
+                        note.strip(),
+                    )
+                    st.success(
+                        f"✅  Deposited {int(qty)} × {part['name']}  |  "
+                        f"New balance: **{new_balance} {part['unit']}**"
+                    )
+                    safe_rerun()
+                except Exception as exc:
+                    st.error(str(exc))
 
 
 def item_master_page(conn):
@@ -575,23 +719,45 @@ def dashboard_page(conn):
     machine_usage = get_machine_usage(conn)
     recent_rows = list_transactions(conn, limit=8)
 
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        render_metric("Active items", metrics["total_items"])
-    with c2:
-        render_metric("Total units in store", metrics["total_stock_units"], "m-accent")
-    with c3:
-        cls = "m-danger" if metrics["low_stock_items"] > 0 else ""
-        render_metric("Low stock items", metrics["low_stock_items"], cls)
-
-    c4, c5, c6 = st.columns(3)
-    with c4:
-        cls = "m-danger" if metrics["out_of_stock_items"] > 0 else ""
-        render_metric("Out of stock", metrics["out_of_stock_items"], cls)
-    with c5:
-        render_metric("Issued today", metrics["issues_today"], "m-accent")
-    with c6:
-        render_metric("Deposited today", metrics["deposits_today"])
+    low_cls  = "mc-danger" if metrics["low_stock_items"] > 0 else ""
+    zero_cls = "mc-danger" if metrics["out_of_stock_items"] > 0 else ""
+    st.markdown(
+        f"""
+        <div class="metrics-grid">
+            <div class="metric-card mc-accent">
+                <div class="metric-icon">📦</div>
+                <div class="metric-label">Active Items</div>
+                <div class="metric-value">{metrics['total_items']}</div>
+            </div>
+            <div class="metric-card mc-accent">
+                <div class="metric-icon">🏷️</div>
+                <div class="metric-label">Total Units in Store</div>
+                <div class="metric-value m-accent">{metrics['total_stock_units']}</div>
+            </div>
+            <div class="metric-card {low_cls}">
+                <div class="metric-icon">⚠️</div>
+                <div class="metric-label">Low Stock Items</div>
+                <div class="metric-value {'m-danger' if metrics['low_stock_items'] > 0 else ''}">{metrics['low_stock_items']}</div>
+            </div>
+            <div class="metric-card {zero_cls}">
+                <div class="metric-icon">🚫</div>
+                <div class="metric-label">Out of Stock</div>
+                <div class="metric-value {'m-danger' if metrics['out_of_stock_items'] > 0 else ''}">{metrics['out_of_stock_items']}</div>
+            </div>
+            <div class="metric-card mc-issued">
+                <div class="metric-icon">⬆️</div>
+                <div class="metric-label">Issued Today</div>
+                <div class="metric-value m-issued">{metrics['issues_today']}</div>
+            </div>
+            <div class="metric-card mc-deposit">
+                <div class="metric-icon">📥</div>
+                <div class="metric-label">Deposited Today</div>
+                <div class="metric-value m-deposit">{metrics['deposits_today']}</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     st.markdown('<div class="section-label">Most consumed items</div>', unsafe_allow_html=True)
     top_df = pd.DataFrame(rows_to_dicts(top_items))
@@ -682,16 +848,14 @@ def main():
     alerts = low_stock_alerts(conn)
 
     # header row
-    header_col, badge_col = st.columns([4, 1])
-    with header_col:
-        st.markdown("## 🏭 Eqvimech Inventory")
-    with badge_col:
-        if alerts:
-            st.markdown(
-                f'<div style="padding-top:1rem">'
-                f'<span class="pill p-low" style="font-size:0.8rem">⚠ {len(alerts)} low stock</span></div>',
-                unsafe_allow_html=True,
-            )
+    st.markdown("## 🏗️ Eqvimech Inventory")
+    if alerts:
+        st.markdown(
+            f'<div class="low-stock-banner">'
+            f'⚠️&nbsp; {len(alerts)} item(s) are at or below minimum stock level'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
     # tab navigation
     if role == "manager":

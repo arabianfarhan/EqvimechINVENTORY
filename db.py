@@ -87,6 +87,7 @@ def ensure_columns(conn):
             "prev_stock": "INTEGER DEFAULT 0",
             "balance_stock": "INTEGER DEFAULT 0",
             "created_at": "TEXT",
+            "returnable": "INTEGER DEFAULT 0",
         },
     )
     c = conn.cursor()
@@ -231,7 +232,7 @@ def save_part(conn, part_data):
     conn.commit()
 
 
-def pick_material(conn, part_id, machine_serials, performed_by, performed_role, purpose, note=""):
+def pick_material(conn, part_id, machine_serials, performed_by, performed_role, purpose, note="", returnable=False):
     c = conn.cursor()
     part = get_part(conn, part_id)
     if part is None:
@@ -254,8 +255,8 @@ def pick_material(conn, part_id, machine_serials, performed_by, performed_role, 
                 """
                 INSERT INTO transactions (
                     tx_type, part_id, part_name, qty, unit, performed_by, performed_role,
-                    machine_sn, purpose, note, prev_stock, balance_stock
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    machine_sn, purpose, note, prev_stock, balance_stock, returnable
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     "issue",
@@ -270,6 +271,7 @@ def pick_material(conn, part_id, machine_serials, performed_by, performed_role, 
                     note,
                     previous_stock,
                     running_balance,
+                    1 if returnable else 0,
                 ),
             )
         c.execute(
