@@ -33,15 +33,7 @@ def inject_theme():
     st.markdown(
         """
         <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-
-        /* ── Global ── */
-        html, body, [class*="css"] {
-            font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
-        }
-
-        /* ── Page background ── */
-        .stApp { background: #f0f4f8; }
+        /* ── Layout ── */
         .block-container {
             padding-top: 1rem !important;
             padding-bottom: 4rem !important;
@@ -50,85 +42,7 @@ def inject_theme():
 
         /* ── Sidebar ── */
         section[data-testid="stSidebar"] {
-            background: #ffffff !important;
             border-right: 1px solid #e2e8f0 !important;
-        }
-        section[data-testid="stSidebar"] h1,
-        section[data-testid="stSidebar"] h2,
-        section[data-testid="stSidebar"] h3 {
-            color: #1e293b !important;
-        }
-        section[data-testid="stSidebar"] p,
-        section[data-testid="stSidebar"] label,
-        section[data-testid="stSidebar"] span { color: #475569 !important; }
-        section[data-testid="stSidebar"] .stTextInput input,
-        section[data-testid="stSidebar"] div[data-baseweb="select"] > div {
-            background: #f8fafc !important;
-            border-color: #cbd5e1 !important;
-            color: #1e293b !important;
-        }
-
-        /* ── Headings ── */
-        h1 { color: #0f172a !important; font-size: 1.5rem !important; font-weight: 800 !important; letter-spacing: -0.02em !important; }
-        h2, h3 { color: #1e293b !important; font-size: 1.05rem !important; font-weight: 700 !important; }
-        p, li { color: #334155 !important; line-height: 1.6 !important; }
-
-        /* ── Inputs ── */
-        .stTextInput input, .stTextArea textarea, .stNumberInput input {
-            background: #ffffff !important;
-            border: 1.5px solid #cbd5e1 !important;
-            border-radius: 10px !important;
-            color: #0f172a !important;
-            font-size: 0.95rem !important;
-        }
-        .stTextInput input:focus, .stTextArea textarea:focus, .stNumberInput input:focus {
-            border-color: #0d9488 !important;
-            box-shadow: 0 0 0 3px rgba(13,148,136,0.12) !important;
-        }
-        div[data-baseweb="select"] > div {
-            background: #ffffff !important;
-            border: 1.5px solid #cbd5e1 !important;
-            border-radius: 10px !important;
-        }
-        div[data-baseweb="select"] * { color: #0f172a !important; }
-        div[data-baseweb="menu"] { background: #ffffff !important; border: 1px solid #e2e8f0 !important; border-radius: 10px !important; box-shadow: 0 8px 24px rgba(0,0,0,0.10) !important; }
-        div[data-baseweb="menu"] li:hover { background: #f0fdfa !important; }
-        .stTextInput label, .stTextArea label, .stNumberInput label,
-        .stSelectbox label, .stCheckbox label {
-            color: #64748b !important;
-            font-size: 0.78rem !important;
-            font-weight: 700 !important;
-            text-transform: uppercase !important;
-            letter-spacing: 0.06em !important;
-        }
-
-        /* ── Buttons ── */
-        .stButton > button {
-            background: #0d9488 !important;
-            color: #ffffff !important;
-            border: none !important;
-            border-radius: 10px !important;
-            font-weight: 700 !important;
-            font-size: 0.93rem !important;
-            padding: 0.55rem 1.2rem !important;
-            min-height: 2.7rem !important;
-            width: 100% !important;
-            transition: all 0.15s ease !important;
-            box-shadow: 0 1px 3px rgba(13,148,136,0.25) !important;
-        }
-        .stButton > button:hover {
-            background: #0f766e !important;
-            box-shadow: 0 4px 12px rgba(13,148,136,0.3) !important;
-            transform: translateY(-1px) !important;
-        }
-        .stButton > button:active { transform: translateY(0) !important; }
-        .stDownloadButton > button {
-            background: #ffffff !important;
-            color: #0d9488 !important;
-            border: 1.5px solid #0d9488 !important;
-            border-radius: 10px !important;
-            font-weight: 600 !important;
-            box-shadow: none !important;
         }
 
         /* ── Tabs ── */
@@ -146,18 +60,62 @@ def inject_theme():
             border-radius: 9px !important;
             font-weight: 600 !important;
             font-size: 0.82rem !important;
-            padding: 0.38rem 0.7rem !important;
+            padding: 0.38rem 0.75rem !important;
             border: none !important;
             white-space: nowrap !important;
-            transition: color 0.1s !important;
         }
         button[data-baseweb="tab"][aria-selected="true"] {
             background: #0d9488 !important;
             color: #ffffff !important;
-            box-shadow: 0 1px 4px rgba(13,148,136,0.3) !important;
         }
         div[data-baseweb="tab-panel"] { padding-top: 1rem !important; }
         div[data-baseweb="tab-highlight"] { display: none !important; }
+
+        /* ── Inputs ── */
+        .stTextInput input, .stTextArea textarea, .stNumberInput input {
+            border-radius: 8px !important;
+        }
+        .stTextInput label, .stTextArea label, .stNumberInput label,
+        .stSelectbox label, .stCheckbox label, .stRadio label {
+            font-size: 0.78rem !important;
+            font-weight: 700 !important;
+            text-transform: uppercase !important;
+            letter-spacing: 0.06em !important;
+        }
+
+        /* ── Primary button ── */
+        .stButton > button {
+            background: #0d9488 !important;
+            color: #ffffff !important;
+            border: none !important;
+            border-radius: 10px !important;
+            font-weight: 700 !important;
+            font-size: 0.93rem !important;
+            min-height: 2.75rem !important;
+            width: 100% !important;
+            transition: background 0.15s, box-shadow 0.15s !important;
+            box-shadow: 0 1px 3px rgba(13,148,136,0.2) !important;
+        }
+        .stButton > button:hover {
+            background: #0f766e !important;
+            box-shadow: 0 4px 12px rgba(13,148,136,0.28) !important;
+        }
+        .stFormSubmitButton > button {
+            background: #0d9488 !important;
+            color: #ffffff !important;
+            border: none !important;
+            border-radius: 10px !important;
+            font-weight: 700 !important;
+            min-height: 2.75rem !important;
+        }
+        .stFormSubmitButton > button:hover { background: #0f766e !important; }
+        .stDownloadButton > button {
+            background: transparent !important;
+            color: #0d9488 !important;
+            border: 1.5px solid #0d9488 !important;
+            border-radius: 10px !important;
+            font-weight: 600 !important;
+        }
 
         /* ── Item card ── */
         .item-card {
@@ -166,18 +124,16 @@ def inject_theme():
             border-radius: 14px;
             padding: 1rem 1.1rem;
             margin-bottom: 0.8rem;
-            box-shadow: 0 1px 4px rgba(15,23,42,0.05);
-            transition: box-shadow 0.15s;
+            box-shadow: 0 1px 3px rgba(15,23,42,0.06);
         }
-        .item-card:hover { box-shadow: 0 4px 14px rgba(15,23,42,0.09); }
-        .item-name { color: #0f172a; font-size: 1rem; font-weight: 700; margin-bottom: 0.2rem; }
-        .item-desc { color: #64748b; font-size: 0.85rem; margin-bottom: 0.7rem; line-height: 1.5; }
-        .pill-row { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-bottom: 0.4rem; }
-        .pill { display: inline-block; padding: 0.2rem 0.6rem; border-radius: 999px; font-size: 0.74rem; font-weight: 600; }
+        .item-name { color: #0f172a; font-size: 1rem; font-weight: 700; margin-bottom: 0.15rem; }
+        .item-desc { color: #64748b; font-size: 0.85rem; margin-bottom: 0.65rem; line-height: 1.5; }
+        .pill-row  { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+        .pill      { display: inline-block; padding: 0.18rem 0.55rem; border-radius: 999px; font-size: 0.73rem; font-weight: 600; }
         .p-neutral { background: #f1f5f9; color: #475569; }
-        .p-ok      { background: #dcfce7; color: #166534; }
-        .p-low     { background: #ffedd5; color: #9a3412; }
-        .p-zero    { background: #fee2e2; color: #991b1b; }
+        .p-ok      { background: #dcfce7; color: #15803d; }
+        .p-low     { background: #ffedd5; color: #c2410c; }
+        .p-zero    { background: #fee2e2; color: #b91c1c; }
 
         /* ── Metric card ── */
         .metric-card {
@@ -188,35 +144,27 @@ def inject_theme():
             margin-bottom: 0.6rem;
             box-shadow: 0 1px 3px rgba(15,23,42,0.05);
         }
-        .metric-label { color: #94a3b8; font-size: 0.74rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
+        .metric-label { color: #94a3b8; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
         .metric-value { color: #0f172a; font-size: 1.6rem; font-weight: 800; margin-top: 0.1rem; }
         .m-accent { color: #0d9488 !important; }
         .m-warn   { color: #ea580c !important; }
         .m-danger { color: #dc2626 !important; }
 
-        /* ── Section labels ── */
+        /* ── Section label ── */
         .section-label {
             color: #94a3b8;
-            font-size: 0.74rem;
+            font-size: 0.72rem;
             font-weight: 700;
             text-transform: uppercase;
             letter-spacing: 0.1em;
-            margin: 1.3rem 0 0.5rem 0;
+            margin: 1.2rem 0 0.5rem 0;
         }
 
         /* ── Divider ── */
-        hr { border-color: #e2e8f0 !important; margin: 0.9rem 0 !important; }
-
-        /* ── Alerts ── */
-        div[data-testid="stAlert"] { border-radius: 12px !important; }
-
-        /* ── Dataframe ── */
-        .stDataFrame { border-radius: 12px !important; overflow: hidden; border: 1px solid #e2e8f0 !important; }
+        hr { margin: 0.9rem 0 !important; }
 
         /* ── Form container ── */
         div[data-testid="stForm"] {
-            background: #f8fafc !important;
-            border: 1px solid #e2e8f0 !important;
             border-radius: 14px !important;
             padding: 1rem !important;
         }
