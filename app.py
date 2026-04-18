@@ -1,3 +1,4 @@
+import os
 import pandas as pd
 import streamlit as st
 
@@ -18,6 +19,7 @@ from db import (
     rows_to_dicts,
     save_part,
     seed_sample_data,
+    DB_PATH,
 )
 
 st.set_page_config(
@@ -38,9 +40,14 @@ def inject_theme():
         <style>
         /* ── Layout ── */
         .block-container {
-            padding-top: 1rem !important;
+            padding-top: 2.5rem !important;
             padding-bottom: 4rem !important;
             max-width: 880px !important;
+        }
+        @media (min-width: 1100px) {
+            .block-container {
+                padding-top: 3.5rem !important;
+            }
         }
 
         /* ── Sidebar ── */
@@ -277,6 +284,32 @@ def sidebar_identity():
         st.session_state["role"] = role
         st.markdown("---")
         st.caption(f"**{st.session_state['user']}** · {role.capitalize()}")
+        st.markdown("---")
+        st.caption("Danger zone — reset application database")
+        reset_code = st.text_input("Enter reset code to wipe app (permanent)", type="password", key="reset_code_input")
+        if st.button("Reset app (permanent)", key="reset_app"):
+            if reset_code == "611881":
+                try:
+                    # close any open connections, remove DB file, re-create schema and seed data
+                    try:
+                        conn = get_conn()
+                        conn.close()
+                    except Exception:
+                        pass
+                    if os.path.exists(DB_PATH):
+                        os.remove(DB_PATH)
+                    conn = get_conn()
+                    init_db(conn)
+                    seed_sample_data(conn)
+                    # clear session state to avoid stale selections
+                    for k in list(st.session_state.keys()):
+                        st.session_state.pop(k, None)
+                    st.success("App reset complete — fresh state initialized.")
+                    safe_rerun()
+                except Exception as e:
+                    st.error(f"Reset failed: {e}")
+            else:
+                st.error("Incorrect reset code.")
 
 
 def items_page(conn):
@@ -297,22 +330,50 @@ def items_page(conn):
         st.info("No items matched your search.")
         return
 
-    for part in parts:
-        st.markdown(
-            f"""
-            <div class="item-card">
-                <div class="item-name">{part['name']}</div>
-                <div class="item-desc">{part['description']}</div>
-                <div class="pill-row">
-                    <span class="pill p-neutral">{part['part_id']}</span>
-                    <span class="pill p-neutral">{part['location']}</span>
-                    <span class="pill p-neutral">Min {part['min_level']} &nbsp;&middot;&nbsp; Reorder {part['reorder_qty']}</span>
-                    {stock_pill(part['quantity'], part['min_level'])}
-                </div>
+    # Show clickable suggestions (radio list) so user can pick by clicking
+    ids = [p["part_id"] for p in parts]
+    labels = [
+        (p["name"] + (f"  —  {p['description']}" if p["description"] else ""))
+        for p in parts
+    ]
+    sel = st.radio("Matching items", labels, index=0, key="items_select")
+    selected_id = ids[labels.index(sel)]
+    part = get_part(conn, selected_id)
+
+    st.markdown(
+        f"""
+        <div class="item-card">
+            <div class="item-name">{part['name']}</div>
+            <div class="item-desc">{part['description']}</div>
+            <div class="pill-row">
+                <span class="pill p-neutral">{part['part_id']}</span>
+                <span class="pill p-neutral">{part['location']}</span>
+                <span class="pill p-neutral">Min {part['min_level']} &nbsp;&middot;&nbsp; Reorder {part['reorder_qty']}</span>
+                {stock_pill(part['quantity'], part['min_level'])}
             </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    
+    # Show full list in an expander so users can scroll and browse
+    with st.expander("Show all items (scroll & browse)"):
+        all_parts = get_parts(conn, active_only=False)
+        for p in all_parts:
+            st.markdown(
+                f"""
+                <div class="item-card" style="margin-bottom:0.55rem">
+                    <div class="item-name">{p['name']}</div>
+                    <div class="item-desc">{p['description']}</div>
+                    <div class="pill-row">
+                        <span class="pill p-neutral">{p['part_id']}</span>
+                        <span class="pill p-neutral">{p['location']}</span>
+                        {stock_pill(p['quantity'], p['min_level'])}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
 
 def pick_material_page(conn):
@@ -349,48 +410,78 @@ def pick_material_page(conn):
         st.info("No active items available for issue.")
         return
 
-    # ── Search box ───────────────────────────────────────────────────────
-    search_term = st.text_input(
-        "Search item",
-        placeholder="Type item name, ID or description…",
-        key="pick_search",
-        label_visibility="collapsed",
-    )
+    # If user clicked a selection from the full-list expander, honour it
+    override_selected = False
+    if st.session_state.get("pick_select_override"):
+        selected_id = st.session_state.pop("pick_select_override")
+        part = get_part(conn, selected_id)
+        override_selected = True
+        # render selected card immediately
+        st.markdown(
+            f"""
+            <div class="item-card">
+                <div class="item-name">{part['name']}</div>
+                <div class="item-desc">{part['description']}</div>
+                <div class="pill-row">
+                    <span class="pill p-neutral">Location: {part['location']}</span>
+                    {stock_pill(part['quantity'], part['min_level'])}
+                    <span class="pill p-neutral">Min {part['min_level']} &nbsp;&middot;&nbsp; Reorder {part['reorder_qty']}</span>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    # ── Search & matching (skip when override selected) ────────────────────
+    selected_id = None
 
     def _label(p):
         return f"{p['name']}" + (f"  —  {p['description']}" if p['description'] else "")
 
-    if search_term.strip():
-        q = search_term.strip().lower()
-        matches = [
-            p for p in available
-            if q in p["name"].lower()
-            or q in p["part_id"].lower()
-            or q in (p["description"] or "").lower()
-        ]
-    else:
-        matches = []
-
-    if not matches and search_term.strip():
-        st.info("No items matched — try a different search term.")
-        return
-
-    if not matches:
-        st.caption("Start typing above to find an item.")
-        return
-
-    if len(matches) == 1:
-        selected_id = matches[0]["part_id"]
-    else:
-        selected_id = st.selectbox(
-            "Matching items",
-            [p["part_id"] for p in matches],
-            format_func=lambda v: _label(get_part(conn, v)),
-            key="pick_select",
+    if not override_selected:
+        search_term = st.text_input(
+            "Search item",
+            placeholder="Type item name, ID or description…",
+            key="pick_search",
             label_visibility="collapsed",
         )
 
-    part = get_part(conn, selected_id)
+        if search_term.strip():
+            q = search_term.strip().lower()
+            matches = [
+                p for p in available
+                if q in p["name"].lower()
+                or q in p["part_id"].lower()
+                or q in (p["description"] or "").lower()
+            ]
+        else:
+            matches = []
+
+        if not matches and search_term.strip():
+            st.info("No items matched — try a different search term.")
+            return
+
+        if not matches:
+            st.caption("Start typing above to find an item.")
+            return
+
+        if len(matches) == 1:
+            selected_id = matches[0]["part_id"]
+        else:
+            ids = [p["part_id"] for p in matches]
+            labels = [_label(p) for p in matches]
+            sel = st.radio("Matching items", labels, key="pick_select")
+            selected_id = ids[labels.index(sel)]
+
+        if not selected_id:
+            return
+
+        part = get_part(conn, selected_id)
+    else:
+        # override_selected path: `part` already fetched above
+        if not part:
+            st.error("Selected item could not be loaded.")
+            return
 
     st.markdown(
         f"""
@@ -406,6 +497,22 @@ def pick_material_page(conn):
         """,
         unsafe_allow_html=True,
     )
+
+    # Full list expander with selection buttons
+    with st.expander("Show all items (click to select)"):
+        for p in available:
+            label = f"{p['name']}" + (f"  —  {p['description']}" if p['description'] else "")
+            st.markdown(
+                f"""
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.2rem">
+                  <div style="flex:1">{label} <span class='pill p-neutral' style='margin-left:.5rem'>{p['part_id']}</span></div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            if st.button(f"Select {p['part_id']}", key=f"pick_all_{p['part_id']}"):
+                st.session_state["pick_select_override"] = p['part_id']
+                safe_rerun()
 
     if part["quantity"] <= 0:
         st.error("This item is out of stock and cannot be issued.")
@@ -526,18 +633,20 @@ def deposit_stock_page(conn):
         st.caption("Start typing above to find an item.")
         return
 
-    if len(matches) == 1:
-        selected_id = matches[0]["part_id"]
+    # honour an override if the user clicked from the full-list expander
+    if st.session_state.get("deposit_select_override"):
+        selected_id = st.session_state.pop("deposit_select_override")
+        part = get_part(conn, selected_id)
     else:
-        selected_id = st.selectbox(
-            "Matching items",
-            [p["part_id"] for p in matches],
-            format_func=lambda v: _dep_label(get_part(conn, v)),
-            key="deposit_select",
-            label_visibility="collapsed",
-        )
+        if len(matches) == 1:
+            selected_id = matches[0]["part_id"]
+        else:
+            ids = [p["part_id"] for p in matches]
+            labels = [_dep_label(p) for p in matches]
+            sel = st.radio("Matching items", labels, key="deposit_select")
+            selected_id = ids[labels.index(sel)]
 
-    part = get_part(conn, selected_id)
+        part = get_part(conn, selected_id)
 
     st.markdown(
         f"""
@@ -552,6 +661,22 @@ def deposit_stock_page(conn):
         """,
         unsafe_allow_html=True,
     )
+
+    # Full list expander with selection buttons for deposit
+    with st.expander("Show all items (click to select)"):
+        for p in parts:
+            label = f"{p['name']}" + (f"  —  {p['description']}" if p['description'] else "")
+            st.markdown(
+                f"""
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.2rem">
+                  <div style="flex:1">{label} <span class='pill p-neutral' style='margin-left:.5rem'>{p['part_id']}</span></div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            if st.button(f"Select {p['part_id']}", key=f"dep_all_{p['part_id']}"):
+                st.session_state["deposit_select_override"] = p['part_id']
+                safe_rerun()
 
     st.markdown("---")
 

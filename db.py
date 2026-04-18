@@ -436,6 +436,10 @@ def import_parts_from_csv(conn, records):
             if not part_id or not name:
                 errors += 1
                 continue
+
+            # Determine whether this part exists before attempting save
+            existed_before = True if get_part(conn, part_id) else False
+
             save_part(conn, {
                 "part_id": part_id,
                 "name": name,
@@ -447,7 +451,9 @@ def import_parts_from_csv(conn, records):
                 "reorder_qty": int(row.get("reorder_qty", 0) or 0),
                 "active": int(row.get("active", 1) or 1),
             })
-            if get_part(conn, part_id):
+
+            # Count correctly based on prior existence
+            if existed_before:
                 updated += 1
             else:
                 inserted += 1
