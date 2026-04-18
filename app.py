@@ -14,6 +14,7 @@ from db import (
     import_parts_from_csv,
     init_db,
     list_open_returnable_issues,
+    list_returned_returnable_issues,
     list_transactions,
     low_stock_alerts,
     pick_material,
@@ -649,6 +650,68 @@ def show_return_dialog(conn):
         safe_rerun()
 
 
+def returnables_page(conn):
+    role = st.session_state.get("role", "user")
+    performed_by = None if role == "manager" else st.session_state["user"]
+
+    search = st.text_input(
+        "Search returnables",
+        placeholder="Item, serial no, purpose, user…",
+        key="returnables_search",
+    )
+
+    pending_rows = list_open_returnable_issues(conn, search=search.strip(), performed_by=performed_by)
+    done_rows = list_returned_returnable_issues(conn, search=search.strip(), performed_by=performed_by)
+
+    pending_tab, done_tab = st.tabs(["Pending", "Done"])
+
+    with pending_tab:
+        st.markdown("<div class='section-label'>Pending Returnable Items</div>", unsafe_allow_html=True)
+        if not pending_rows:
+            st.info("No pending returnable items.")
+        else:
+            if role == "manager":
+                with st.container(height=260, border=True):
+                    for issue in pending_rows:
+                        meta = issue["machine_sn"] or issue["purpose"] or "No machine / purpose noted"
+                        label = f"{issue['part_name']} | {issue['part_id']} | {meta}"
+                        if st.button(
+                            label,
+                            key=f"returnables_pending_{issue['id']}",
+                            use_container_width=True,
+                            type="secondary",
+                        ):
+                            st.session_state["return_dialog_issue_id"] = int(issue["id"])
+                            safe_rerun()
+                if st.session_state.get("return_dialog_issue_id"):
+                    show_return_dialog(conn)
+
+            pending_df = pd.DataFrame(rows_to_dicts(pending_rows))
+            pending_df["return_status"] = "Pending Return"
+            pending_cols = [
+                c for c in [
+                    "created_at", "return_status", "part_name", "part_id", "qty", "unit",
+                    "performed_by", "machine_sn", "purpose", "note"
+                ] if c in pending_df.columns
+            ]
+            st.dataframe(pending_df[pending_cols], use_container_width=True, hide_index=True)
+
+    with done_tab:
+        st.markdown("<div class='section-label'>Returned Materials</div>", unsafe_allow_html=True)
+        if not done_rows:
+            st.info("No returned returnable items.")
+        else:
+            done_df = pd.DataFrame(rows_to_dicts(done_rows))
+            done_df["return_status"] = "Returned"
+            done_cols = [
+                c for c in [
+                    "returned_at", "return_status", "part_name", "part_id", "qty", "unit",
+                    "performed_by", "machine_sn", "purpose", "note", "returned_tx_id"
+                ] if c in done_df.columns
+            ]
+            st.dataframe(done_df[done_cols], use_container_width=True, hide_index=True)
+
+
 def items_page(conn):
     parts = get_parts(conn)
 
@@ -963,8 +1026,17 @@ def history_page(conn):
         st.info("No matching records.")
         return
 
+    def _return_status(row):
+        if row.get("tx_type") == "return":
+            return "Returned"
+        if row.get("tx_type") == "issue" and row.get("returnable"):
+            return "Returned" if row.get("returned_at") else "Pending Return"
+        return ""
+
+    df["return_status"] = df.apply(_return_status, axis=1)
+
     display_cols = [
-        c for c in ["created_at", "tx_type", "part_name", "qty", "unit",
+        c for c in ["created_at", "tx_type", "return_status", "part_name", "qty", "unit",
                      "performed_by", "machine_sn", "purpose", "returnable", "returned_at",
                      "prev_stock", "balance_stock", "note"]
         if c in df.columns
@@ -1022,9 +1094,9 @@ def main():
 
     # tab navigation
     if role == "manager":
-        tab_labels = ["📦 Items", "⬆ Pick", "📥 Deposit", "🗂 Master", "📊 Dashboard", "📋 History", "🔔 Alerts"]
+        tab_labels = ["📦 Items", "⬆ Pick", "📥 Deposit", "↩ Returnables", "🗂 Master", "📊 Dashboard", "📋 History", "🔔 Alerts"]
         tabs = st.tabs(tab_labels)
-        tab_items, tab_pick, tab_deposit, tab_im, tab_dash, tab_hist, tab_alert = tabs
+        tab_items, tab_pick, tab_deposit, tab_returnables, tab_im, tab_dash, tab_hist, tab_alert = tabs
 
         with tab_items:
             items_page(conn)
@@ -1032,6 +1104,8 @@ def main():
             pick_material_page(conn)
         with tab_deposit:
             deposit_stock_page(conn)
+        with tab_returnables:
+            returnables_page(conn)
         with tab_im:
             item_master_page(conn)
         with tab_dash:
@@ -1041,14 +1115,16 @@ def main():
         with tab_alert:
             alerts_page(conn)
     else:
-        tab_labels = ["📦 Items", "⬆ Pick", "📋 History", "🔔 Alerts"]
+        tab_labels = ["📦 Items", "⬆ Pick", "↩ Returnables", "📋 History", "🔔 Alerts"]
         tabs = st.tabs(tab_labels)
-        tab_items, tab_pick, tab_hist, tab_alert = tabs
+        tab_items, tab_pick, tab_returnables, tab_hist, tab_alert = tabs
 
         with tab_items:
             items_page(conn)
         with tab_pick:
             pick_material_page(conn)
+        with tab_returnables:
+            returnables_page(conn)
         with tab_hist:
             history_page(conn)
         with tab_alert:

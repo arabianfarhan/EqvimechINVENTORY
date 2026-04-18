@@ -423,13 +423,16 @@ def list_transactions(conn, tx_type="all", search="", performed_by=None, limit=2
     return c.execute(sql, params).fetchall()
 
 
-def list_open_returnable_issues(conn, search="", limit=200):
+def list_open_returnable_issues(conn, search="", performed_by=None, limit=200):
     c = conn.cursor()
     sql = (
         "SELECT * FROM transactions "
         "WHERE tx_type = 'issue' AND returnable = 1 AND COALESCE(returned_at, '') = ''"
     )
     params = []
+    if performed_by:
+        sql += " AND performed_by = ?"
+        params.append(performed_by)
     if search:
         sql += (
             " AND (part_id LIKE ? OR part_name LIKE ? OR machine_sn LIKE ? "
@@ -438,6 +441,28 @@ def list_open_returnable_issues(conn, search="", limit=200):
         like_query = f"%{search}%"
         params.extend([like_query, like_query, like_query, like_query, like_query, like_query])
     sql += " ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
+    return c.execute(sql, params).fetchall()
+
+
+def list_returned_returnable_issues(conn, search="", performed_by=None, limit=200):
+    c = conn.cursor()
+    sql = (
+        "SELECT * FROM transactions "
+        "WHERE tx_type = 'issue' AND returnable = 1 AND COALESCE(returned_at, '') <> ''"
+    )
+    params = []
+    if performed_by:
+        sql += " AND performed_by = ?"
+        params.append(performed_by)
+    if search:
+        sql += (
+            " AND (part_id LIKE ? OR part_name LIKE ? OR machine_sn LIKE ? "
+            "OR purpose LIKE ? OR note LIKE ? OR performed_by LIKE ?)"
+        )
+        like_query = f"%{search}%"
+        params.extend([like_query, like_query, like_query, like_query, like_query, like_query])
+    sql += " ORDER BY returned_at DESC, created_at DESC LIMIT ?"
     params.append(limit)
     return c.execute(sql, params).fetchall()
 
