@@ -88,6 +88,9 @@ def ensure_columns(conn):
             "balance_stock": "INTEGER DEFAULT 0",
             "created_at": "TEXT",
             "returnable": "INTEGER DEFAULT 0",
+            "returned_at": "TEXT",
+            "returned_tx_id": "INTEGER DEFAULT 0",
+            "source_tx_id": "INTEGER DEFAULT 0",
         },
     )
     c = conn.cursor()
@@ -330,6 +333,70 @@ def deposit_stock(conn, part_id, qty, performed_by, performed_role, note=""):
         raise
 
 
+def return_issue_material(conn, issue_tx_id, performed_by, performed_role, note=""):
+    c = conn.cursor()
+    issue = c.execute("SELECT * FROM transactions WHERE id = ?", (issue_tx_id,)).fetchone()
+    if issue is None:
+        raise ValueError("Issue record not found")
+    if issue["tx_type"] != "issue":
+        raise ValueError("Only issue records can be returned")
+    if not issue["returnable"]:
+        raise ValueError("This issue was not marked as returnable")
+    if issue["returned_at"]:
+        raise ValueError("This material has already been returned")
+
+    part = get_part(conn, issue["part_id"])
+    if part is None:
+        raise ValueError("Part not found")
+
+    previous_stock = part["quantity"]
+    balance_stock = previous_stock + int(issue["qty"])
+    return_note = (note or "").strip()
+    if issue["machine_sn"]:
+        prefix = f"Return for machine {issue['machine_sn']}"
+        return_note = f"{prefix} | {return_note}" if return_note else prefix
+
+    try:
+        c.execute("BEGIN")
+        c.execute(
+            "UPDATE parts SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE part_id = ?",
+            (balance_stock, issue["part_id"]),
+        )
+        c.execute(
+            """
+            INSERT INTO transactions (
+                tx_type, part_id, part_name, qty, unit, performed_by, performed_role,
+                machine_sn, purpose, note, prev_stock, balance_stock, source_tx_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "return",
+                issue["part_id"],
+                issue["part_name"],
+                int(issue["qty"]),
+                issue["unit"],
+                performed_by,
+                performed_role,
+                issue["machine_sn"],
+                "returnable material returned",
+                return_note,
+                previous_stock,
+                balance_stock,
+                int(issue_tx_id),
+            ),
+        )
+        return_tx_id = c.lastrowid
+        c.execute(
+            "UPDATE transactions SET returned_at = CURRENT_TIMESTAMP, returned_tx_id = ? WHERE id = ?",
+            (return_tx_id, issue_tx_id),
+        )
+        conn.commit()
+        return balance_stock
+    except Exception:
+        conn.rollback()
+        raise
+
+
 def low_stock_alerts(conn):
     c = conn.cursor()
     return c.execute(
@@ -349,6 +416,25 @@ def list_transactions(conn, tx_type="all", search="", performed_by=None, limit=2
         params.append(performed_by)
     if search:
         sql += " AND (part_id LIKE ? OR part_name LIKE ? OR machine_sn LIKE ? OR purpose LIKE ? OR note LIKE ? OR performed_by LIKE ?)"
+        like_query = f"%{search}%"
+        params.extend([like_query, like_query, like_query, like_query, like_query, like_query])
+    sql += " ORDER BY created_at DESC LIMIT ?"
+    params.append(limit)
+    return c.execute(sql, params).fetchall()
+
+
+def list_open_returnable_issues(conn, search="", limit=200):
+    c = conn.cursor()
+    sql = (
+        "SELECT * FROM transactions "
+        "WHERE tx_type = 'issue' AND returnable = 1 AND COALESCE(returned_at, '') = ''"
+    )
+    params = []
+    if search:
+        sql += (
+            " AND (part_id LIKE ? OR part_name LIKE ? OR machine_sn LIKE ? "
+            "OR purpose LIKE ? OR note LIKE ? OR performed_by LIKE ?)"
+        )
         like_query = f"%{search}%"
         params.extend([like_query, like_query, like_query, like_query, like_query, like_query])
     sql += " ORDER BY created_at DESC LIMIT ?"

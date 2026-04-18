@@ -13,9 +13,11 @@ from db import (
     get_top_consumed_items,
     import_parts_from_csv,
     init_db,
+    list_open_returnable_issues,
     list_transactions,
     low_stock_alerts,
     pick_material,
+    return_issue_material,
     rows_to_dicts,
     save_part,
     seed_sample_data,
@@ -345,7 +347,15 @@ def filter_parts(parts, query):
     ]
 
 
-def render_part_browser(conn, parts, search_key, selected_key, button_prefix, placeholder):
+def part_list_label(part):
+    desc = (part["description"] or "").strip()
+    if len(desc) > 54:
+        desc = desc[:51] + "..."
+    base = f"{part['name']} | {part['part_id']}"
+    return f"{base}\n{desc}" if desc else base
+
+
+def render_part_picker(parts, search_key, dialog_key, button_prefix, placeholder):
     search_term = st.text_input(
         "Search item",
         placeholder=placeholder,
@@ -354,34 +364,289 @@ def render_part_browser(conn, parts, search_key, selected_key, button_prefix, pl
     )
     matches = filter_parts(parts, search_term)
 
-    valid_ids = {p["part_id"] for p in parts}
-    selected_id = st.session_state.get(selected_key)
-    if selected_id not in valid_ids:
-        st.session_state.pop(selected_key, None)
-        selected_id = None
+    st.caption(f"Showing {len(matches)} of {len(parts)} items")
+    with st.container(height=460, border=True):
+        if not matches:
+            st.info("No items matched your search.")
+        else:
+            for p in matches:
+                if st.button(
+                    part_list_label(p),
+                    key=f"{button_prefix}_{p['part_id']}",
+                    use_container_width=True,
+                    type="secondary",
+                ):
+                    st.session_state[dialog_key] = p["part_id"]
+                    safe_rerun()
 
-    list_col, detail_col = st.columns([1.05, 1.45], gap="large")
 
-    with list_col:
-        st.caption(f"Showing {len(matches)} of {len(parts)} items")
-        with st.container(height=460, border=True):
-            if not matches:
-                st.info("No items matched your search.")
-            else:
-                for p in matches:
-                    label = f"{p['name']} | {p['part_id']}"
-                    if st.button(
-                        label,
-                        key=f"{button_prefix}_{p['part_id']}",
-                        use_container_width=True,
-                        type="secondary",
-                    ):
-                        st.session_state[selected_key] = p["part_id"]
-                        safe_rerun()
+@st.dialog("Item Details", width="large", dismissible=False)
+def show_item_details_dialog(conn):
+    part_id = st.session_state.get("items_dialog_part_id")
+    part = get_part(conn, part_id) if part_id else None
+    if not part:
+        st.session_state.pop("items_dialog_part_id", None)
+        safe_rerun()
+        return
 
-    selected_id = st.session_state.get(selected_key)
-    selected_part = get_part(conn, selected_id) if selected_id else None
-    return selected_part, detail_col
+    st.markdown(
+        f"""
+        <div class="item-card">
+            <div class="item-name">{part['name']}</div>
+            <div class="item-desc">{part['description']}</div>
+            <div class="pill-row">
+                <span class="pill p-neutral">{part['part_id']}</span>
+                <span class="pill p-neutral">Location: {part['location']}</span>
+                <span class="pill p-neutral">Unit: {part['unit']}</span>
+                <span class="pill p-neutral">Min {part['min_level']} &nbsp;&middot;&nbsp; Reorder {part['reorder_qty']}</span>
+                {stock_pill(part['quantity'], part['min_level'])}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if st.button("Close", key="close_items_dialog", type="secondary"):
+        st.session_state.pop("items_dialog_part_id", None)
+        safe_rerun()
+
+
+@st.dialog("Issue Material", width="large", dismissible=False)
+def show_pick_dialog(conn):
+    part_id = st.session_state.get("pick_dialog_part_id")
+    part = get_part(conn, part_id) if part_id else None
+    if not part:
+        st.session_state.pop("pick_dialog_part_id", None)
+        safe_rerun()
+        return
+
+    st.markdown(
+        f"""
+        <div class="item-card">
+            <div class="item-name">{part['name']}</div>
+            <div class="item-desc">{part['description']}</div>
+            <div class="pill-row">
+                <span class="pill p-neutral">Location: {part['location']}</span>
+                {stock_pill(part['quantity'], part['min_level'])}
+                <span class="pill p-neutral">Min {part['min_level']} &nbsp;&middot;&nbsp; Reorder {part['reorder_qty']}</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if part["quantity"] <= 0:
+        st.error("This item is out of stock and cannot be issued.")
+        if st.button("Close", key="close_pick_dialog_oos", type="secondary"):
+            st.session_state.pop("pick_dialog_part_id", None)
+            safe_rerun()
+        return
+
+    qty = st.number_input(
+        "Quantity to pick",
+        min_value=1,
+        max_value=int(part["quantity"]),
+        value=1,
+        step=1,
+        key=f"pick_qty_{part_id}",
+    )
+    st.markdown(
+        f'<p style="color:#64748b;font-size:0.78rem;font-weight:700;text-transform:uppercase;'
+        f'letter-spacing:.06em;margin:0 0 .3rem 0">Machine serial numbers '
+        f'({int(qty)} required — one per line or comma-separated)</p>',
+        unsafe_allow_html=True,
+    )
+    serials_raw = st.text_area(
+        "serial_numbers_input",
+        placeholder="e.g.\nVMC-120\nVMC-121",
+        height=110,
+        key=f"pick_serials_{part_id}",
+        label_visibility="collapsed",
+    )
+    purpose_options = st.multiselect(
+        "Purpose / Usage *",
+        ["Assembly", "Checking", "Testing", "Other"],
+        key=f"pick_purpose_opts_{part_id}",
+    )
+    purpose_other = ""
+    if "Other" in purpose_options:
+        purpose_other = st.text_input(
+            "Specify other purpose",
+            placeholder="e.g. UTM-200 calibration",
+            key=f"pick_purpose_other_{part_id}",
+        )
+    returnable = st.checkbox(
+        "↩  Returnable (material will be brought back)",
+        key=f"pick_returnable_{part_id}",
+    )
+    note = st.text_input(
+        "Note (optional)",
+        placeholder="e.g. Urgent – project deadline",
+        key=f"pick_note_{part_id}",
+    )
+
+    action_col, close_col = st.columns(2)
+    if action_col.button("✅  Confirm Material Issue", key=f"confirm_pick_{part_id}", type="primary"):
+        serials = [s.strip() for s in serials_raw.replace("\n", ",").split(",") if s.strip()]
+        purpose_parts = [p for p in purpose_options if p != "Other"]
+        if purpose_other.strip():
+            purpose_parts.append(purpose_other.strip())
+        purpose_str = ", ".join(purpose_parts)
+
+        if len(serials) != int(qty):
+            st.error(
+                f"You entered {len(serials)} serial number(s) but picked {int(qty)} unit(s). "
+                "One serial number per unit is required."
+            )
+        elif not purpose_options:
+            st.error("Please select at least one Purpose / Usage.")
+        elif "Other" in purpose_options and not purpose_other.strip():
+            st.error("Please specify the other purpose.")
+        else:
+            try:
+                new_balance = pick_material(
+                    conn,
+                    part["part_id"],
+                    serials,
+                    st.session_state["user"],
+                    st.session_state["role"],
+                    purpose_str,
+                    note.strip(),
+                    returnable=returnable,
+                )
+                st.session_state["pick_done"] = {
+                    "part": part["name"],
+                    "qty": int(qty),
+                    "balance": new_balance,
+                    "unit": part["unit"],
+                    "returnable": returnable,
+                }
+                st.session_state.pop("pick_dialog_part_id", None)
+                safe_rerun()
+            except Exception as exc:
+                st.error(str(exc))
+
+    if close_col.button("Cancel", key=f"close_pick_dialog_{part_id}", type="secondary"):
+        st.session_state.pop("pick_dialog_part_id", None)
+        safe_rerun()
+
+
+@st.dialog("Deposit Stock", width="large", dismissible=False)
+def show_deposit_dialog(conn):
+    part_id = st.session_state.get("deposit_dialog_part_id")
+    part = get_part(conn, part_id) if part_id else None
+    if not part:
+        st.session_state.pop("deposit_dialog_part_id", None)
+        safe_rerun()
+        return
+
+    st.markdown(
+        f"""
+        <div class="item-card">
+            <div class="item-name">{part['name']}</div>
+            <div class="item-desc">{part['description']}</div>
+            <div class="pill-row">
+                {stock_pill(part['quantity'], part['min_level'])}
+                <span class="pill p-neutral">Location: {part['location']}</span>
+                <span class="pill p-neutral">Unit: {part['unit']}</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    qty = st.number_input(
+        "Quantity to deposit",
+        min_value=1,
+        value=1,
+        step=1,
+        key=f"deposit_qty_{part_id}",
+    )
+    note = st.text_input(
+        "Note / GRN reference *",
+        placeholder="e.g. GRN-001 / Vendor invoice (required)",
+        key=f"deposit_note_{part_id}",
+    )
+    action_col, close_col = st.columns(2)
+    if action_col.button("📥  Confirm Deposit", key=f"confirm_deposit_{part_id}", type="primary"):
+        if not note.strip():
+            st.error("Note / GRN reference is required.")
+        else:
+            try:
+                new_balance = deposit_stock(
+                    conn,
+                    part["part_id"],
+                    int(qty),
+                    st.session_state["user"],
+                    st.session_state["role"],
+                    note.strip(),
+                )
+                st.session_state.pop("deposit_dialog_part_id", None)
+                st.success(
+                    f"✅  Deposited {int(qty)} × {part['name']}  |  "
+                    f"New balance: **{new_balance} {part['unit']}**"
+                )
+                safe_rerun()
+            except Exception as exc:
+                st.error(str(exc))
+
+    if close_col.button("Cancel", key=f"close_deposit_dialog_{part_id}", type="secondary"):
+        st.session_state.pop("deposit_dialog_part_id", None)
+        safe_rerun()
+
+
+@st.dialog("Return Material", width="large", dismissible=False)
+def show_return_dialog(conn):
+    issue_tx_id = st.session_state.get("return_dialog_issue_id")
+    issue = None
+    if issue_tx_id:
+        issue = next((row for row in list_open_returnable_issues(conn, limit=500) if row["id"] == issue_tx_id), None)
+        if issue is None:
+            issue = next((row for row in list_transactions(conn, tx_type="issue", limit=500) if row["id"] == issue_tx_id), None)
+
+    if not issue:
+        st.session_state.pop("return_dialog_issue_id", None)
+        safe_rerun()
+        return
+
+    st.markdown(
+        f"""
+        <div class="item-card">
+            <div class="item-name">{issue['part_name']}</div>
+            <div class="item-desc">Issued by {issue['performed_by']} on {issue['created_at']}</div>
+            <div class="pill-row">
+                <span class="pill p-neutral">{issue['part_id']}</span>
+                <span class="pill p-neutral">Qty: {issue['qty']} {issue['unit']}</span>
+                <span class="pill p-neutral">Machine: {issue['machine_sn'] or 'N/A'}</span>
+                <span class="pill p-neutral">Purpose: {issue['purpose'] or 'N/A'}</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    note = st.text_input(
+        "Return note / reference",
+        placeholder="e.g. Returned in good condition / DO-014",
+        key=f"return_note_{issue_tx_id}",
+    )
+    action_col, close_col = st.columns(2)
+    if action_col.button("↩ Mark Returned", key=f"mark_returned_{issue_tx_id}", type="primary"):
+        try:
+            new_balance = return_issue_material(
+                conn,
+                int(issue_tx_id),
+                st.session_state["user"],
+                st.session_state["role"],
+                note.strip(),
+            )
+            st.session_state.pop("return_dialog_issue_id", None)
+            st.success(f"Returned successfully. New balance: {new_balance} {issue['unit']}")
+            safe_rerun()
+        except Exception as exc:
+            st.error(str(exc))
+    if close_col.button("Cancel", key=f"cancel_return_{issue_tx_id}", type="secondary"):
+        st.session_state.pop("return_dialog_issue_id", None)
+        safe_rerun()
 
 
 def items_page(conn):
@@ -391,37 +656,15 @@ def items_page(conn):
         st.info("No items available.")
         return
 
-    part, detail_col = render_part_browser(
-        conn,
+    render_part_picker(
         parts,
         "items_search",
-        "items_selected_id",
+        "items_dialog_part_id",
         "items_browser",
         "Type item name, ID, description or location…",
     )
-
-    with detail_col:
-        if not part:
-            st.info("Select an item from the list to view its details.")
-            return
-
-        st.markdown("<div class='section-label'>Item Details</div>", unsafe_allow_html=True)
-        st.markdown(
-            f"""
-            <div class="item-card">
-                <div class="item-name">{part['name']}</div>
-                <div class="item-desc">{part['description']}</div>
-                <div class="pill-row">
-                    <span class="pill p-neutral">{part['part_id']}</span>
-                    <span class="pill p-neutral">Location: {part['location']}</span>
-                    <span class="pill p-neutral">Unit: {part['unit']}</span>
-                    <span class="pill p-neutral">Min {part['min_level']} &nbsp;&middot;&nbsp; Reorder {part['reorder_qty']}</span>
-                    {stock_pill(part['quantity'], part['min_level'])}
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    if st.session_state.get("items_dialog_part_id"):
+        show_item_details_dialog(conn)
 
 
 def pick_material_page(conn):
@@ -458,117 +701,15 @@ def pick_material_page(conn):
         st.info("No active items available for issue.")
         return
 
-    part, detail_col = render_part_browser(
-        conn,
+    render_part_picker(
         available,
         "pick_search",
-        "pick_selected_id",
+        "pick_dialog_part_id",
         "pick_browser",
         "Type item name, ID, description or location…",
     )
-
-    with detail_col:
-        if not part:
-            st.info("Select an item from the list to issue material.")
-            return
-
-        st.markdown("<div class='section-label'>Issue Material</div>", unsafe_allow_html=True)
-        st.markdown(
-            f"""
-            <div class="item-card">
-                <div class="item-name">{part['name']}</div>
-                <div class="item-desc">{part['description']}</div>
-                <div class="pill-row">
-                    <span class="pill p-neutral">Location: {part['location']}</span>
-                    {stock_pill(part['quantity'], part['min_level'])}
-                    <span class="pill p-neutral">Min {part['min_level']} &nbsp;&middot;&nbsp; Reorder {part['reorder_qty']}</span>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        if part["quantity"] <= 0:
-            st.error("This item is out of stock and cannot be issued.")
-            return
-
-        st.markdown("---")
-
-        qty = st.number_input(
-            "Quantity to pick",
-            min_value=1,
-            max_value=int(part["quantity"]),
-            value=1,
-            step=1,
-            key="pick_qty",
-        )
-
-        st.markdown(
-            f'<p style="color:#64748b;font-size:0.78rem;font-weight:700;text-transform:uppercase;'
-            f'letter-spacing:.06em;margin:0 0 .3rem 0">Machine serial numbers '
-            f'({int(qty)} required — one per line or comma-separated)</p>',
-            unsafe_allow_html=True,
-        )
-        serials_raw = st.text_area(
-            "serial_numbers_input",
-            placeholder="e.g.\nVMC-120\nVMC-121",
-            height=110,
-            key="pick_serials",
-            label_visibility="collapsed",
-        )
-        purpose_options = st.multiselect(
-            "Purpose / Usage *",
-            ["Assembly", "Checking", "Testing", "Other"],
-            key="pick_purpose_opts",
-        )
-        purpose_other = ""
-        if "Other" in purpose_options:
-            purpose_other = st.text_input(
-                "Specify other purpose",
-                placeholder="e.g. UTM-200 calibration",
-                key="pick_purpose_other",
-            )
-        returnable = st.checkbox("↩  Returnable (material will be brought back)", key="pick_returnable")
-        note = st.text_input("Note (optional)", placeholder="e.g. Urgent – project deadline", key="pick_note")
-
-        if st.button("✅  Confirm Material Issue", key="confirm_pick", type="primary"):
-            serials = [s.strip() for s in serials_raw.replace("\n", ",").split(",") if s.strip()]
-            purpose_parts = [p for p in purpose_options if p != "Other"]
-            if purpose_other.strip():
-                purpose_parts.append(purpose_other.strip())
-            purpose_str = ", ".join(purpose_parts)
-
-            if len(serials) != int(qty):
-                st.error(
-                    f"You entered {len(serials)} serial number(s) but picked {int(qty)} unit(s). "
-                    "One serial number per unit is required."
-                )
-            elif not purpose_options:
-                st.error("Please select at least one Purpose / Usage.")
-            elif "Other" in purpose_options and not purpose_other.strip():
-                st.error("Please specify the other purpose.")
-            else:
-                try:
-                    new_balance = pick_material(
-                        conn,
-                        part["part_id"],
-                        serials,
-                        st.session_state["user"],
-                        st.session_state["role"],
-                        purpose_str,
-                        note.strip(),
-                        returnable=returnable,
-                    )
-                    st.session_state["pick_done"] = {
-                        "part": part["name"],
-                        "qty": int(qty),
-                        "balance": new_balance,
-                        "unit": part["unit"],
-                        "returnable": returnable,
-                    }
-                    safe_rerun()
-                except Exception as exc:
-                    st.error(str(exc))
+    if st.session_state.get("pick_dialog_part_id"):
+        show_pick_dialog(conn)
 
 
 def deposit_stock_page(conn):
@@ -577,70 +718,15 @@ def deposit_stock_page(conn):
         st.info("Add items via Item Master before depositing stock.")
         return
 
-    part, detail_col = render_part_browser(
-        conn,
+    render_part_picker(
         parts,
         "deposit_search",
-        "deposit_selected_id",
+        "deposit_dialog_part_id",
         "deposit_browser",
         "Type item name, ID, description or location…",
     )
-
-    with detail_col:
-        if not part:
-            st.info("Select an item from the list to deposit stock.")
-            return
-
-        st.markdown("<div class='section-label'>Deposit Stock</div>", unsafe_allow_html=True)
-        st.markdown(
-            f"""
-            <div class="item-card">
-                <div class="item-name">{part['name']}</div>
-                <div class="item-desc">{part['description']}</div>
-                <div class="pill-row">
-                    {stock_pill(part['quantity'], part['min_level'])}
-                    <span class="pill p-neutral">Location: {part['location']}</span>
-                    <span class="pill p-neutral">Unit: {part['unit']}</span>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        st.markdown("---")
-
-        with st.form("deposit_form"):
-            qty = st.number_input("Quantity to deposit", min_value=1, value=1, step=1)
-            note = st.text_input("Note / GRN reference *", placeholder="e.g. GRN-001 / Vendor invoice (required)")
-            col_save, col_cancel = st.columns([1, 1])
-            submitted = col_save.form_submit_button("📥  Confirm Deposit", use_container_width=True)
-            cancelled = col_cancel.form_submit_button("✖  Cancel", use_container_width=True, type="secondary")
-
-            if cancelled:
-                st.session_state.pop("deposit_search", None)
-                st.session_state.pop("deposit_selected_id", None)
-                safe_rerun()
-
-            if submitted:
-                if not note.strip():
-                    st.error("Note / GRN reference is required.")
-                else:
-                    try:
-                        new_balance = deposit_stock(
-                            conn,
-                            part["part_id"],
-                            int(qty),
-                            st.session_state["user"],
-                            st.session_state["role"],
-                            note.strip(),
-                        )
-                        st.success(
-                            f"✅  Deposited {int(qty)} × {part['name']}  |  "
-                            f"New balance: **{new_balance} {part['unit']}**"
-                        )
-                        safe_rerun()
-                    except Exception as exc:
-                        st.error(str(exc))
+    if st.session_state.get("deposit_dialog_part_id"):
+        show_deposit_dialog(conn)
 
 
 def item_master_page(conn):
@@ -842,11 +928,33 @@ def dashboard_page(conn):
 
 def history_page(conn):
     fc1, fc2 = st.columns(2)
-    tx_type = fc1.selectbox("Type", ["all", "issue", "deposit"], key="hist_type")
+    tx_type = fc1.selectbox("Type", ["all", "issue", "deposit", "return"], key="hist_type")
     search = fc2.text_input("Search", placeholder="Item, serial no, user…", key="hist_search")
 
     role = st.session_state.get("role", "user")
     performed_by = None if role == "manager" else st.session_state["user"]
+
+    if role == "manager":
+        open_returns = list_open_returnable_issues(conn, search=search.strip())
+        st.markdown("<div class='section-label'>Pending Returnable Items</div>", unsafe_allow_html=True)
+        if not open_returns:
+            st.info("No pending returnable items.")
+        else:
+            with st.container(height=260, border=True):
+                for issue in open_returns:
+                    meta = issue["machine_sn"] or issue["purpose"] or "No machine / purpose noted"
+                    label = f"{issue['part_name']} | {issue['part_id']} | {meta}"
+                    if st.button(
+                        label,
+                        key=f"return_issue_{issue['id']}",
+                        use_container_width=True,
+                        type="secondary",
+                    ):
+                        st.session_state["return_dialog_issue_id"] = int(issue["id"])
+                        safe_rerun()
+        if st.session_state.get("return_dialog_issue_id"):
+            show_return_dialog(conn)
+        st.markdown("---")
 
     rows = list_transactions(conn, tx_type=tx_type, search=search.strip(), performed_by=performed_by)
     df = pd.DataFrame(rows_to_dicts(rows))
@@ -857,7 +965,8 @@ def history_page(conn):
 
     display_cols = [
         c for c in ["created_at", "tx_type", "part_name", "qty", "unit",
-                     "performed_by", "machine_sn", "purpose", "prev_stock", "balance_stock", "note"]
+                     "performed_by", "machine_sn", "purpose", "returnable", "returned_at",
+                     "prev_stock", "balance_stock", "note"]
         if c in df.columns
     ]
     st.dataframe(df[display_cols], use_container_width=True, hide_index=True)
