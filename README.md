@@ -1,6 +1,6 @@
 # EqvimechINVENTORY
 
-After `git init` and your first commit, run these one-time commands to connect a local repository to GitHub and push the `main` branch:
+After creating the GitHub repository, running `git init`, and making your first commit, use these one-time commands to connect a local repository and push the `main` branch:
 
 ```bash
 git remote add origin https://github.com/arabianfarhan/EqvimechINVENTORY.git
