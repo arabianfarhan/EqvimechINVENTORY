@@ -1,5 +1,7 @@
 # EqvimechINVENTORY
 
+One-time commands to connect a local clone to GitHub and push the `main` branch:
+
 ```bash
 git remote add origin https://github.com/arabianfarhan/EqvimechINVENTORY.git
 git branch -M main
