@@ -33,54 +33,70 @@ def inject_theme():
     st.markdown(
         """
         <style>
-        /* ── Global ── */
-        html, body, [class*="css"] { font-family: 'Inter', 'Segoe UI', sans-serif; }
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 
-        /* ── Main background ── */
-        .stApp { background: #0d1924; }
+        /* ── Global ── */
+        html, body, [class*="css"] {
+            font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+        }
+
+        /* ── Page background ── */
+        .stApp { background: #f0f4f8; }
         .block-container {
-            padding-top: 0.8rem !important;
-            padding-bottom: 5rem !important;
-            max-width: 860px !important;
+            padding-top: 1rem !important;
+            padding-bottom: 4rem !important;
+            max-width: 880px !important;
         }
 
         /* ── Sidebar ── */
         section[data-testid="stSidebar"] {
-            background: #0d1924 !important;
-            border-right: 1px solid #1e2e3d !important;
+            background: #ffffff !important;
+            border-right: 1px solid #e2e8f0 !important;
         }
-        section[data-testid="stSidebar"] * { color: #c8d8e4 !important; }
+        section[data-testid="stSidebar"] h1,
+        section[data-testid="stSidebar"] h2,
+        section[data-testid="stSidebar"] h3 {
+            color: #1e293b !important;
+        }
+        section[data-testid="stSidebar"] p,
+        section[data-testid="stSidebar"] label,
+        section[data-testid="stSidebar"] span { color: #475569 !important; }
         section[data-testid="stSidebar"] .stTextInput input,
-        section[data-testid="stSidebar"] div[data-baseweb="select"] {
-            background: #162332 !important;
-            border-color: #2a3f52 !important;
-            color: #e2edf5 !important;
+        section[data-testid="stSidebar"] div[data-baseweb="select"] > div {
+            background: #f8fafc !important;
+            border-color: #cbd5e1 !important;
+            color: #1e293b !important;
         }
 
         /* ── Headings ── */
-        h1 { color: #e2edf5 !important; font-size: 1.5rem !important; font-weight: 800 !important; }
-        h2, h3 { color: #c8d8e4 !important; font-size: 1.1rem !important; font-weight: 700 !important; }
-        p, li { color: #a0bece !important; }
+        h1 { color: #0f172a !important; font-size: 1.5rem !important; font-weight: 800 !important; letter-spacing: -0.02em !important; }
+        h2, h3 { color: #1e293b !important; font-size: 1.05rem !important; font-weight: 700 !important; }
+        p, li { color: #334155 !important; line-height: 1.6 !important; }
 
         /* ── Inputs ── */
         .stTextInput input, .stTextArea textarea, .stNumberInput input {
-            background: #162332 !important;
-            border: 1px solid #2a3f52 !important;
+            background: #ffffff !important;
+            border: 1.5px solid #cbd5e1 !important;
             border-radius: 10px !important;
-            color: #e2edf5 !important;
+            color: #0f172a !important;
+            font-size: 0.95rem !important;
+        }
+        .stTextInput input:focus, .stTextArea textarea:focus, .stNumberInput input:focus {
+            border-color: #0d9488 !important;
+            box-shadow: 0 0 0 3px rgba(13,148,136,0.12) !important;
         }
         div[data-baseweb="select"] > div {
-            background: #162332 !important;
-            border-color: #2a3f52 !important;
+            background: #ffffff !important;
+            border: 1.5px solid #cbd5e1 !important;
             border-radius: 10px !important;
         }
-        div[data-baseweb="select"] * { color: #e2edf5 !important; }
-        div[data-baseweb="menu"] { background: #162332 !important; border-color: #2a3f52 !important; }
-        div[data-baseweb="menu"] li:hover { background: #1e3248 !important; }
+        div[data-baseweb="select"] * { color: #0f172a !important; }
+        div[data-baseweb="menu"] { background: #ffffff !important; border: 1px solid #e2e8f0 !important; border-radius: 10px !important; box-shadow: 0 8px 24px rgba(0,0,0,0.10) !important; }
+        div[data-baseweb="menu"] li:hover { background: #f0fdfa !important; }
         .stTextInput label, .stTextArea label, .stNumberInput label,
         .stSelectbox label, .stCheckbox label {
-            color: #6b8fa4 !important;
-            font-size: 0.8rem !important;
+            color: #64748b !important;
+            font-size: 0.78rem !important;
             font-weight: 700 !important;
             text-transform: uppercase !important;
             letter-spacing: 0.06em !important;
@@ -88,30 +104,36 @@ def inject_theme():
 
         /* ── Buttons ── */
         .stButton > button {
-            background: #00c4b4 !important;
-            color: #0d1924 !important;
+            background: #0d9488 !important;
+            color: #ffffff !important;
             border: none !important;
-            border-radius: 12px !important;
+            border-radius: 10px !important;
             font-weight: 700 !important;
-            font-size: 0.95rem !important;
+            font-size: 0.93rem !important;
             padding: 0.55rem 1.2rem !important;
             min-height: 2.7rem !important;
             width: 100% !important;
             transition: all 0.15s ease !important;
+            box-shadow: 0 1px 3px rgba(13,148,136,0.25) !important;
         }
-        .stButton > button:hover { background: #00e0ce !important; transform: translateY(-1px) !important; }
+        .stButton > button:hover {
+            background: #0f766e !important;
+            box-shadow: 0 4px 12px rgba(13,148,136,0.3) !important;
+            transform: translateY(-1px) !important;
+        }
         .stButton > button:active { transform: translateY(0) !important; }
         .stDownloadButton > button {
-            background: #162332 !important;
-            color: #00c4b4 !important;
-            border: 1px solid #00c4b4 !important;
-            border-radius: 12px !important;
+            background: #ffffff !important;
+            color: #0d9488 !important;
+            border: 1.5px solid #0d9488 !important;
+            border-radius: 10px !important;
             font-weight: 600 !important;
+            box-shadow: none !important;
         }
 
         /* ── Tabs ── */
         div[data-baseweb="tab-list"] {
-            background: #162332 !important;
+            background: #e2e8f0 !important;
             border-radius: 12px !important;
             padding: 4px !important;
             gap: 2px !important;
@@ -120,81 +142,101 @@ def inject_theme():
         }
         button[data-baseweb="tab"] {
             background: transparent !important;
-            color: #7a99ae !important;
+            color: #64748b !important;
             border-radius: 9px !important;
             font-weight: 600 !important;
-            font-size: 0.8rem !important;
-            padding: 0.35rem 0.65rem !important;
+            font-size: 0.82rem !important;
+            padding: 0.38rem 0.7rem !important;
             border: none !important;
             white-space: nowrap !important;
+            transition: color 0.1s !important;
         }
-        button[data-baseweb="tab"][aria-selected="true"] { background: #00c4b4 !important; color: #0d1924 !important; }
+        button[data-baseweb="tab"][aria-selected="true"] {
+            background: #0d9488 !important;
+            color: #ffffff !important;
+            box-shadow: 0 1px 4px rgba(13,148,136,0.3) !important;
+        }
         div[data-baseweb="tab-panel"] { padding-top: 1rem !important; }
         div[data-baseweb="tab-highlight"] { display: none !important; }
 
         /* ── Item card ── */
         .item-card {
-            background: #162332;
-            border: 1px solid #1e3248;
-            border-radius: 16px;
-            padding: 1rem;
-            margin-bottom: 0.9rem;
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 14px;
+            padding: 1rem 1.1rem;
+            margin-bottom: 0.8rem;
+            box-shadow: 0 1px 4px rgba(15,23,42,0.05);
+            transition: box-shadow 0.15s;
         }
-        .item-name { color: #e2edf5; font-size: 1.05rem; font-weight: 700; margin-bottom: 0.2rem; }
-        .item-desc { color: #5d8097; font-size: 0.86rem; margin-bottom: 0.75rem; }
-        .pill-row { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.5rem; }
-        .pill { display: inline-block; padding: 0.22rem 0.6rem; border-radius: 999px; font-size: 0.76rem; font-weight: 700; }
-        .p-neutral { background: #1e3248; color: #7a99ae; }
-        .p-ok      { background: #0d2d21; color: #00c48a; }
-        .p-low     { background: #2d1b14; color: #ff6b35; }
-        .p-zero    { background: #2d1422; color: #ff4757; }
+        .item-card:hover { box-shadow: 0 4px 14px rgba(15,23,42,0.09); }
+        .item-name { color: #0f172a; font-size: 1rem; font-weight: 700; margin-bottom: 0.2rem; }
+        .item-desc { color: #64748b; font-size: 0.85rem; margin-bottom: 0.7rem; line-height: 1.5; }
+        .pill-row { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-bottom: 0.4rem; }
+        .pill { display: inline-block; padding: 0.2rem 0.6rem; border-radius: 999px; font-size: 0.74rem; font-weight: 600; }
+        .p-neutral { background: #f1f5f9; color: #475569; }
+        .p-ok      { background: #dcfce7; color: #166534; }
+        .p-low     { background: #ffedd5; color: #9a3412; }
+        .p-zero    { background: #fee2e2; color: #991b1b; }
 
         /* ── Metric card ── */
         .metric-card {
-            background: #162332;
-            border: 1px solid #1e3248;
-            border-radius: 14px;
-            padding: 0.85rem 1rem;
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 0.9rem 1rem;
             margin-bottom: 0.6rem;
+            box-shadow: 0 1px 3px rgba(15,23,42,0.05);
         }
-        .metric-label { color: #5d8097; font-size: 0.76rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; }
-        .metric-value { color: #e2edf5; font-size: 1.55rem; font-weight: 800; margin-top: 0.1rem; }
-        .m-accent { color: #00c4b4 !important; }
-        .m-warn   { color: #ff6b35 !important; }
-        .m-danger { color: #ff4757 !important; }
+        .metric-label { color: #94a3b8; font-size: 0.74rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
+        .metric-value { color: #0f172a; font-size: 1.6rem; font-weight: 800; margin-top: 0.1rem; }
+        .m-accent { color: #0d9488 !important; }
+        .m-warn   { color: #ea580c !important; }
+        .m-danger { color: #dc2626 !important; }
 
         /* ── Section labels ── */
         .section-label {
-            color: #3d6070;
-            font-size: 0.76rem;
+            color: #94a3b8;
+            font-size: 0.74rem;
             font-weight: 700;
             text-transform: uppercase;
             letter-spacing: 0.1em;
-            margin: 1.2rem 0 0.5rem 0;
+            margin: 1.3rem 0 0.5rem 0;
         }
 
         /* ── Divider ── */
-        hr { border-color: #1e3248 !important; margin: 0.8rem 0 !important; }
+        hr { border-color: #e2e8f0 !important; margin: 0.9rem 0 !important; }
 
         /* ── Alerts ── */
         div[data-testid="stAlert"] { border-radius: 12px !important; }
 
         /* ── Dataframe ── */
-        .stDataFrame { border-radius: 12px !important; overflow: hidden; }
+        .stDataFrame { border-radius: 12px !important; overflow: hidden; border: 1px solid #e2e8f0 !important; }
 
         /* ── Form container ── */
         div[data-testid="stForm"] {
-            background: #162332 !important;
-            border: 1px solid #1e3248 !important;
-            border-radius: 16px !important;
+            background: #f8fafc !important;
+            border: 1px solid #e2e8f0 !important;
+            border-radius: 14px !important;
             padding: 1rem !important;
         }
 
+        /* ── Checkbox ── */
+        .stCheckbox [data-baseweb="checkbox"] > div { border-color: #cbd5e1 !important; }
+
         /* ── Status messages ── */
-        div.stSuccess > div { background: #0d2d21 !important; color: #00c48a !important; border-radius: 10px !important; }
-        div.stError > div   { background: #2d1422 !important; color: #ff4757 !important; border-radius: 10px !important; }
-        div.stWarning > div { background: #2d1b14 !important; color: #ff6b35 !important; border-radius: 10px !important; }
-        div.stInfo > div    { background: #0d2238 !important; color: #5db9e0 !important; border-radius: 10px !important; }
+        div.stSuccess > div { background: #f0fdf4 !important; color: #15803d !important; border: 1px solid #bbf7d0 !important; border-radius: 10px !important; }
+        div.stError > div   { background: #fef2f2 !important; color: #dc2626 !important; border: 1px solid #fecaca !important; border-radius: 10px !important; }
+        div.stWarning > div { background: #fffbeb !important; color: #d97706 !important; border: 1px solid #fde68a !important; border-radius: 10px !important; }
+        div.stInfo > div    { background: #eff6ff !important; color: #2563eb !important; border: 1px solid #bfdbfe !important; border-radius: 10px !important; }
+
+        /* ── Mobile tweaks ── */
+        @media (max-width: 640px) {
+            .block-container { padding-left: 0.75rem !important; padding-right: 0.75rem !important; }
+            .item-card { padding: 0.85rem 0.9rem; }
+            h1 { font-size: 1.25rem !important; }
+            .metric-value { font-size: 1.35rem !important; }
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -317,7 +359,7 @@ def pick_material_page(conn):
     )
 
     st.markdown(
-        f'<p style="color:#6b8fa4;font-size:0.8rem;font-weight:700;text-transform:uppercase;'
+        f'<p style="color:#64748b;font-size:0.78rem;font-weight:700;text-transform:uppercase;'
         f'letter-spacing:.06em;margin:0 0 .3rem 0">Machine serial numbers '
         f'({int(qty)} required — one per line or comma-separated)</p>',
         unsafe_allow_html=True,
@@ -599,8 +641,8 @@ def main():
     with badge_col:
         if alerts:
             st.markdown(
-                f'<div style="padding-top:0.9rem">'
-                f'<span class="pill p-low">⚠ {len(alerts)} low</span></div>',
+                f'<div style="padding-top:1rem">'
+                f'<span class="pill p-low" style="font-size:0.8rem">⚠ {len(alerts)} low stock</span></div>',
                 unsafe_allow_html=True,
             )
 
