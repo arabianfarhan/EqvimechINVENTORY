@@ -2,6 +2,7 @@ import pandas as pd
 import streamlit as st
 
 from db import (
+    delete_part,
     deposit_stock,
     get_conn,
     get_dashboard_metrics,
@@ -9,10 +10,12 @@ from db import (
     get_part,
     get_parts,
     get_top_consumed_items,
+    import_parts_from_csv,
     init_db,
     list_transactions,
     low_stock_alerts,
     pick_material,
+    rows_to_dicts,
     save_part,
     seed_sample_data,
 )
@@ -229,9 +232,10 @@ def sidebar_identity():
 
 def items_page(conn):
     search = st.text_input(
-        "",
-        placeholder="🔍  Search by name, code, description, location…",
+        "Search items",
+        placeholder="🔍  Name, item ID, description, location…",
         key="items_search",
+        label_visibility="collapsed",
     )
     parts = get_parts(conn, query=search.strip())
 
@@ -258,6 +262,33 @@ def items_page(conn):
 
 
 def pick_material_page(conn):
+    # ── Success state: shown after a confirmed issue to prevent double-press ──
+    done = st.session_state.get("pick_done")
+    if done:
+        st.balloons()
+        st.markdown(
+            f"""
+            <div style="background:#dcfce7;border:2px solid #16a34a;border-radius:12px;
+                        padding:2rem;text-align:center;margin:1rem 0">
+                <div style="font-size:2.8rem">✅</div>
+                <div style="font-size:1.5rem;font-weight:800;color:#15803d">
+                    Material Issued Successfully!
+                </div>
+                <div style="font-size:1rem;color:#166534;margin-top:.6rem">
+                    <strong>{done['qty']}</strong> × {done['part']} issued
+                    &nbsp;|&nbsp; New balance:
+                    <strong>{done['balance']} {done['unit']}</strong>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if st.button("← Issue another item", key="pick_another"):
+            st.session_state.pop("pick_done", None)
+            st.session_state.pop("pick_part", None)
+            safe_rerun()
+        return
+
     available = get_parts(conn)
     if not available:
         st.info("No active items available for issue.")
@@ -265,15 +296,22 @@ def pick_material_page(conn):
 
     part_id = st.session_state.get("pick_part")
     part_ids = [p["part_id"] for p in available]
-    default_index = part_ids.index(part_id) if part_id and part_id in part_ids else 0
+    options = [None] + part_ids
+    default_index = (part_ids.index(part_id) + 1) if part_id and part_id in part_ids else 0
 
     selected_id = st.selectbox(
         "Select item",
-        part_ids,
+        options,
         index=default_index,
-        format_func=lambda v: f"{v}  ·  {get_part(conn, v)['name']}",
+        format_func=lambda v: "— select an item —" if v is None else (
+            lambda p: f"{p['name']}" + (f"  —  {p['description']}" if p['description'] else "")
+        )(get_part(conn, v)),
         key="pick_select",
     )
+
+    if selected_id is None:
+        return
+
     part = get_part(conn, selected_id)
 
     st.markdown(
@@ -342,11 +380,12 @@ def pick_material_page(conn):
                     purpose.strip(),
                     note.strip(),
                 )
-                st.success(
-                    f"✅  Issued {int(qty)} × {part['name']}  |  "
-                    f"New balance: **{new_balance} {part['unit']}**"
-                )
-                st.session_state.pop("pick_part", None)
+                st.session_state["pick_done"] = {
+                    "part": part["name"],
+                    "qty": int(qty),
+                    "balance": new_balance,
+                    "unit": part["unit"],
+                }
                 safe_rerun()
             except Exception as exc:
                 st.error(str(exc))
@@ -361,7 +400,9 @@ def deposit_stock_page(conn):
     selected_id = st.selectbox(
         "Select item",
         [p["part_id"] for p in parts],
-        format_func=lambda v: f"{v}  ·  {get_part(conn, v)['name']}",
+        format_func=lambda v: (
+            lambda p: f"{p['name']}" + (f"  —  {p['description']}" if p['description'] else "")
+        )(get_part(conn, v)),
         key="deposit_select",
     )
     part = get_part(conn, selected_id)
@@ -469,6 +510,64 @@ def item_master_page(conn):
                 st.success("Item saved.")
                 safe_rerun()
 
+    # ── Delete ────────────────────────────────────────────────────────────
+    if current is not None:
+        st.markdown("---")
+        st.markdown("**Delete item**")
+        st.caption("Soft-deletes the item; all history is preserved.")
+        if st.button("🗑️  Delete this item", key="im_delete", type="secondary"):
+            st.session_state["im_confirm_delete"] = True
+        if st.session_state.get("im_confirm_delete"):
+            st.warning(f"Are you sure you want to delete **{current['name']}**? This cannot be undone.")
+            c1, c2 = st.columns(2)
+            if c1.button("Yes, delete", key="im_delete_yes", type="primary"):
+                delete_part(conn, current["part_id"])
+                st.success("Item deleted.")
+                st.session_state.pop("im_confirm_delete", None)
+                st.session_state.pop("im_select", None)
+                safe_rerun()
+            if c2.button("Cancel", key="im_delete_no"):
+                st.session_state.pop("im_confirm_delete", None)
+                safe_rerun()
+
+    # ── CSV Export / Import ───────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("**Export / Import items (CSV)**")
+    col_exp, col_imp = st.columns(2)
+
+    with col_exp:
+        all_parts = get_parts(conn, active_only=False)
+        if all_parts:
+            exp_df = pd.DataFrame(rows_to_dicts(all_parts)).drop(
+                columns=["created_at", "updated_at"], errors="ignore"
+            )
+            st.download_button(
+                "⬇ Export all items",
+                exp_df.to_csv(index=False).encode("utf-8"),
+                file_name="items_export.csv",
+                mime="text/csv",
+                key="im_export",
+            )
+        else:
+            st.info("No items to export yet.")
+
+    with col_imp:
+        uploaded = st.file_uploader("⬆ Import CSV", type=["csv"], key="im_upload")
+        if uploaded is not None:
+            try:
+                import_df = pd.read_csv(uploaded, dtype=str).fillna("")
+                records = import_df.to_dict("records")
+                inserted, updated, errors = import_parts_from_csv(conn, records)
+                if errors:
+                    st.warning(
+                        f"Imported with {len(errors)} error(s): {'; '.join(errors[:3])}"
+                    )
+                else:
+                    st.success(f"✅  {inserted} new item(s) added, {updated} updated.")
+                safe_rerun()
+            except Exception as exc:
+                st.error(f"Import failed: {exc}")
+
 
 def dashboard_page(conn):
     metrics = get_dashboard_metrics(conn)
@@ -495,21 +594,21 @@ def dashboard_page(conn):
         render_metric("Deposited today", metrics["deposits_today"])
 
     st.markdown('<div class="section-label">Most consumed items</div>', unsafe_allow_html=True)
-    top_df = pd.DataFrame(top_items)
+    top_df = pd.DataFrame(rows_to_dicts(top_items))
     if top_df.empty:
         st.info("No issue history yet.")
     else:
         st.dataframe(top_df, use_container_width=True, hide_index=True)
 
     st.markdown('<div class="section-label">Top machine usage</div>', unsafe_allow_html=True)
-    mdf = pd.DataFrame(machine_usage)
+    mdf = pd.DataFrame(rows_to_dicts(machine_usage))
     if mdf.empty:
         st.info("No machine-wise issue history yet.")
     else:
         st.dataframe(mdf, use_container_width=True, hide_index=True)
 
     st.markdown('<div class="section-label">Recent activity</div>', unsafe_allow_html=True)
-    rdf = pd.DataFrame(recent_rows)
+    rdf = pd.DataFrame(rows_to_dicts(recent_rows))
     if rdf.empty:
         st.info("No stock movement yet.")
     else:
@@ -530,7 +629,7 @@ def history_page(conn):
     performed_by = None if role == "manager" else st.session_state["user"]
 
     rows = list_transactions(conn, tx_type=tx_type, search=search.strip(), performed_by=performed_by)
-    df = pd.DataFrame(rows)
+    df = pd.DataFrame(rows_to_dicts(rows))
 
     if df.empty:
         st.info("No matching records.")
