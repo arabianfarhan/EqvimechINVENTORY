@@ -840,9 +840,46 @@ def deposit_stock_page(conn):
 
 def item_master_page(conn):
     parts = get_parts(conn, active_only=False)
-    options = ["— New item —"] + [p["part_id"] for p in parts]
-    selected = st.selectbox("Select item to edit", options, key="im_select")
-    current = None if selected == "— New item —" else get_part(conn, selected)
+
+    action_col, status_col = st.columns([0.28, 0.72])
+    if action_col.button("＋ New item", key="im_new_item", type="secondary"):
+        st.session_state.pop("im_selected_id", None)
+        st.session_state.pop("im_confirm_delete", None)
+        safe_rerun()
+
+    search_term = st.text_input(
+        "Search items for master edit",
+        placeholder="Type item name, ID, description or location…",
+        key="im_search",
+        label_visibility="collapsed",
+    )
+    matches = filter_parts(parts, search_term)
+
+    with status_col:
+        current_id = st.session_state.get("im_selected_id")
+        current = get_part(conn, current_id) if current_id else None
+        if current:
+            st.caption(f"Editing: {current['name']} ({current['part_id']})")
+        else:
+            st.caption("Creating a new item")
+
+    with st.container(height=300, border=True):
+        if not matches:
+            st.info("No items matched your search.")
+        else:
+            for part in matches:
+                if st.button(
+                    part_list_label(part),
+                    key=f"im_pick_{part['part_id']}",
+                    use_container_width=True,
+                    type="secondary",
+                ):
+                    st.session_state["im_selected_id"] = part["part_id"]
+                    st.session_state.pop("im_confirm_delete", None)
+                    safe_rerun()
+
+    current_id = st.session_state.get("im_selected_id")
+    current = get_part(conn, current_id) if current_id else None
 
     st.markdown("---")
 
@@ -900,6 +937,7 @@ def item_master_page(conn):
                         "active": 1 if active else 0,
                     },
                 )
+                st.session_state["im_selected_id"] = pid
                 st.success("Item saved.")
                 safe_rerun()
 
@@ -917,7 +955,7 @@ def item_master_page(conn):
                 delete_part(conn, current["part_id"])
                 st.success("Item deleted.")
                 st.session_state.pop("im_confirm_delete", None)
-                st.session_state.pop("im_select", None)
+                st.session_state.pop("im_selected_id", None)
                 safe_rerun()
             if c2.button("Cancel", key="im_delete_no"):
                 st.session_state.pop("im_confirm_delete", None)
