@@ -32,6 +32,8 @@ st.set_page_config(
     initial_sidebar_state="auto",
 )
 
+RESET_EMPTY_MARKER = ".reset_empty_app"
+
 
 def safe_rerun():
     getattr(st, "rerun", getattr(st, "experimental_rerun", lambda: None))()
@@ -293,46 +295,90 @@ def render_metric(label, value, extra_class=""):
     )
 
 
-def sidebar_identity():
+@st.dialog("Manager Access", width="small", dismissible=False)
+def show_manager_password_dialog():
+    password = st.text_input(
+        "Enter manager password",
+        type="password",
+        key="manager_password_input",
+    )
+    unlock_col, cancel_col = st.columns(2)
+
+    if unlock_col.button("Unlock", key="manager_unlock", type="primary"):
+        if password == "321":
+            st.session_state["manager_authenticated"] = True
+            st.session_state["role"] = "manager"
+            st.session_state["role_selector"] = "manager"
+            st.session_state.pop("manager_login_requested", None)
+            st.session_state.pop("manager_password_input", None)
+            safe_rerun()
+        else:
+            st.error("Incorrect manager password.")
+
+    if cancel_col.button("Cancel", key="manager_cancel", type="secondary"):
+        st.session_state["manager_authenticated"] = False
+        st.session_state["role"] = "user"
+        st.session_state["role_selector"] = "user"
+        st.session_state.pop("manager_login_requested", None)
+        st.session_state.pop("manager_password_input", None)
+        safe_rerun()
+
+
+def sidebar_identity(conn):
     with st.sidebar:
+        if "role" not in st.session_state:
+            st.session_state["role"] = "user"
+        if "role_selector" not in st.session_state:
+            st.session_state["role_selector"] = st.session_state["role"]
+
         st.markdown("### 🏭 Eqvimech")
         st.markdown("---")
-        username = st.text_input("Your name", value=st.session_state.get("user", "operator"))
-        role = st.selectbox(
+        selected_role = st.selectbox(
             "Role",
             ("user", "manager"),
-            index=0 if st.session_state.get("role", "user") == "user" else 1,
+            key="role_selector",
         )
-        st.session_state["user"] = username.strip() or "operator"
-        st.session_state["role"] = role
+
+        if selected_role == "manager":
+            if st.session_state.get("manager_authenticated"):
+                st.session_state["role"] = "manager"
+                st.session_state["user"] = "manager"
+            else:
+                st.session_state["role"] = "user"
+                st.session_state["user"] = "operator"
+                st.session_state["manager_login_requested"] = True
+        else:
+            st.session_state["role"] = "user"
+            st.session_state["user"] = "operator"
+            st.session_state["manager_authenticated"] = False
+            st.session_state.pop("manager_login_requested", None)
+
         st.markdown("---")
-        st.caption(f"**{st.session_state['user']}** · {role.capitalize()}")
+        st.caption(f"Access: **{st.session_state['role'].capitalize()}**")
         st.markdown("---")
         st.caption("Danger zone — reset application database")
         reset_code = st.text_input("Enter reset code to wipe app (permanent)", type="password", key="reset_code_input")
         if st.button("Reset app (permanent)", key="reset_app", type="primary"):
             if reset_code == "611881":
                 try:
-                    # close any open connections, remove DB file, re-create schema and seed data
-                    try:
-                        conn = get_conn()
-                        conn.close()
-                    except Exception:
+                    # Close current DB handle, mark next startup as empty, then wipe DB file.
+                    conn.close()
+                    with open(RESET_EMPTY_MARKER, "w", encoding="utf-8"):
                         pass
                     if os.path.exists(DB_PATH):
                         os.remove(DB_PATH)
-                    conn = get_conn()
-                    init_db(conn)
-                    seed_sample_data(conn)
-                    # clear session state to avoid stale selections
+
+                    # Clear session state to avoid stale selections and credentials.
                     for k in list(st.session_state.keys()):
                         st.session_state.pop(k, None)
-                    st.success("App reset complete — fresh state initialized.")
                     safe_rerun()
                 except Exception as e:
                     st.error(f"Reset failed: {e}")
             else:
                 st.error("Incorrect reset code.")
+
+    if st.session_state.get("manager_login_requested"):
+        show_manager_password_dialog()
 
 
 def filter_parts(parts, query):
@@ -1076,8 +1122,11 @@ def main():
 
     conn = get_conn()
     init_db(conn)
-    seed_sample_data(conn)
-    sidebar_identity()
+    if os.path.exists(RESET_EMPTY_MARKER):
+        os.remove(RESET_EMPTY_MARKER)
+    else:
+        seed_sample_data(conn)
+    sidebar_identity(conn)
 
     role = st.session_state.get("role", "user")
     alerts = low_stock_alerts(conn)
