@@ -1,6 +1,7 @@
 import os
 import pandas as pd
 import streamlit as st
+from st_keyup import st_keyup
 
 from db import (
     delete_part,
@@ -37,6 +38,16 @@ RESET_EMPTY_MARKER = ".reset_empty_app"
 
 def safe_rerun():
     getattr(st, "rerun", getattr(st, "experimental_rerun", lambda: None))()
+
+
+def live_search_input(label, placeholder, key):
+    return st_keyup(
+        label,
+        key=key,
+        placeholder=placeholder,
+        label_visibility="collapsed",
+        debounce=150,
+    )
 
 
 def inject_theme():
@@ -403,12 +414,7 @@ def part_list_label(part):
 
 
 def render_part_picker(parts, search_key, dialog_key, button_prefix, placeholder):
-    search_term = st.text_input(
-        "Search item",
-        placeholder=placeholder,
-        key=search_key,
-        label_visibility="collapsed",
-    )
+    search_term = live_search_input("Search item", placeholder, search_key)
     matches = filter_parts(parts, search_term)
 
     st.caption(f"Showing {len(matches)} of {len(parts)} items")
@@ -700,10 +706,10 @@ def returnables_page(conn):
     role = st.session_state.get("role", "user")
     performed_by = None if role == "manager" else st.session_state["user"]
 
-    search = st.text_input(
+    search = live_search_input(
         "Search returnables",
-        placeholder="Item, serial no, purpose, user…",
-        key="returnables_search",
+        "Item, serial no, purpose, user…",
+        "returnables_search",
     )
 
     pending_rows = list_open_returnable_issues(conn, search=search.strip(), performed_by=performed_by)
@@ -847,11 +853,10 @@ def item_master_page(conn):
         st.session_state.pop("im_confirm_delete", None)
         safe_rerun()
 
-    search_term = st.text_input(
+    search_term = live_search_input(
         "Search items for master edit",
-        placeholder="Type item name, ID, description or location…",
-        key="im_search",
-        label_visibility="collapsed",
+        "Type item name, ID, description or location…",
+        "im_search",
     )
     matches = filter_parts(parts, search_term)
 
@@ -1076,7 +1081,8 @@ def dashboard_page(conn):
 def history_page(conn):
     fc1, fc2 = st.columns(2)
     tx_type = fc1.selectbox("Type", ["all", "issue", "deposit", "return"], key="hist_type")
-    search = fc2.text_input("Search", placeholder="Item, serial no, user…", key="hist_search")
+    with fc2:
+        search = live_search_input("Search", "Item, serial no, user…", "hist_search")
 
     role = st.session_state.get("role", "user")
     performed_by = None if role == "manager" else st.session_state["user"]
