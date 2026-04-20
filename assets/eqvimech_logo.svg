@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 860" role="img" aria-labelledby="title desc">
+  <title id="title">Eqvimech logo</title>
+  <desc id="desc">Stylized EM mark above EQVIMECH wordmark</desc>
+  <rect width="860" height="860" fill="#ffffff"/>
+  <g fill="#050505">
+    <path d="M40 64h428v84H40z"/>
+    <path d="M40 306h349v84H40z"/>
+    <path d="M40 148h103v414H40z"/>
+    <path d="M40 478h348v84H40z"/>
+    <path d="M396 64h111l64 278 63-278h111L618 562H508z"/>
+    <path d="M723 64h97v498h-97z"/>
+  </g>
+  <text x="430" y="702" text-anchor="middle" font-size="118" font-family="Bodoni MT, Didot, Times New Roman, serif" fill="#050505" letter-spacing="1">EQVIMECH</text>
+</svg>

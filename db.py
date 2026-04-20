@@ -5,6 +5,7 @@ import sqlite3
 
 DB_PATH = "inventory.db"
 ITEMS_SNAPSHOT_CSV_PATH = "items_master_live.csv"
+CATEGORY_OPTIONS = ("Hardware", "Electronics", "Metals", "Others")
 DEFAULT_SAMPLE_PART_IDS = {
     "Ballscrew-R25",
     "NutR32",
@@ -245,7 +246,7 @@ def get_part(conn, part_id):
 def sync_parts_snapshot_csv(conn, active_only=False):
     c = conn.cursor()
     sql = (
-        "SELECT part_id, name, description, unit, quantity, location, min_level, reorder_qty, active "
+        "SELECT part_id, name, description, unit, quantity, location, min_level, reorder_qty, category, active "
         "FROM parts"
     )
     params = []
@@ -314,7 +315,7 @@ def save_part(conn, part_data):
             """
             INSERT INTO parts (
                 part_id, name, description, unit, quantity, location, min_level, reorder_qty, category, active
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 part_data["part_id"],
@@ -331,6 +332,170 @@ def save_part(conn, part_data):
         )
     conn.commit()
     sync_parts_snapshot_csv(conn)
+
+
+def _row_is_effectively_blank(row):
+    text_fields = ["part_id", "name", "description", "unit", "location"]
+    if any(str(row.get(field) or "").strip() for field in text_fields):
+        return False
+    numeric_fields = ["quantity", "min_level", "reorder_qty"]
+    if any(str(row.get(field) or "").strip() not in {"", "0"} for field in numeric_fields):
+        return False
+    return True
+
+
+def _coerce_non_negative_int(value, field_label, row_number):
+    if value in (None, ""):
+        return 0
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        try:
+            result = int(float(value))
+        except (TypeError, ValueError):
+            raise ValueError(f"Row {row_number}: {field_label} must be a whole number")
+    if result < 0:
+        raise ValueError(f"Row {row_number}: {field_label} cannot be negative")
+    return result
+
+
+def _coerce_active_flag(value):
+    if isinstance(value, bool):
+        return 1 if value else 0
+    text = str(value or "").strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return 1
+    if text in {"0", "false", "no", "n", "off"}:
+        return 0
+    return 1
+
+
+def save_master_table(conn, rows):
+    c = conn.cursor()
+    existing_rows = c.execute("SELECT id, part_id FROM parts ORDER BY id").fetchall()
+    existing_by_id = {int(row["id"]): row for row in existing_rows}
+
+    prepared_existing = []
+    prepared_new = []
+    seen_part_ids = set()
+
+    for row_number, row in enumerate(rows, start=1):
+        row_id_raw = row.get("id")
+        row_id = int(row_id_raw) if row_id_raw not in (None, "") else None
+
+        if row_id is None and _row_is_effectively_blank(row):
+            continue
+
+        part_id = str(row.get("part_id") or "").strip()
+        name = str(row.get("name") or "").strip()
+        description = str(row.get("description") or "").strip()
+        unit = str(row.get("unit") or "Nos").strip() or "Nos"
+        location = str(row.get("location") or "").strip()
+        category = str(row.get("category") or "Others").strip() or "Others"
+        quantity = _coerce_non_negative_int(row.get("quantity"), "Quantity", row_number)
+        min_level = _coerce_non_negative_int(row.get("min_level"), "Min stock level", row_number)
+        reorder_qty = _coerce_non_negative_int(row.get("reorder_qty"), "Reorder quantity", row_number)
+        active = _coerce_active_flag(row.get("active"))
+
+        if not part_id:
+            raise ValueError(f"Row {row_number}: Item Code is required")
+        if not name:
+            raise ValueError(f"Row {row_number}: Item name is required")
+        if category not in CATEGORY_OPTIONS:
+            raise ValueError(
+                f"Row {row_number}: Category must be one of {', '.join(CATEGORY_OPTIONS)}"
+            )
+        if part_id in seen_part_ids:
+            raise ValueError(f"Row {row_number}: Duplicate Item Code '{part_id}'")
+        seen_part_ids.add(part_id)
+
+        payload = {
+            "part_id": part_id,
+            "name": name,
+            "description": description,
+            "unit": unit,
+            "quantity": quantity,
+            "location": location,
+            "min_level": min_level,
+            "reorder_qty": reorder_qty,
+            "category": category,
+            "active": active,
+        }
+
+        if row_id is None:
+            prepared_new.append(payload)
+            continue
+
+        if row_id not in existing_by_id:
+            raise ValueError(f"Row {row_number}: Item no longer exists. Refresh and try again.")
+
+        payload["id"] = row_id
+        payload["current_part_id"] = str(existing_by_id[row_id]["part_id"] or "").strip()
+        prepared_existing.append(payload)
+
+    try:
+        c.execute("BEGIN")
+
+        for payload in prepared_existing:
+            if payload["part_id"] != payload["current_part_id"]:
+                c.execute(
+                    "UPDATE parts SET part_id = ? WHERE id = ?",
+                    (f"__tmp__{payload['id']}__", payload["id"]),
+                )
+
+        for payload in prepared_existing:
+            c.execute(
+                """
+                UPDATE parts
+                SET part_id = ?, name = ?, description = ?, unit = ?, quantity = ?, location = ?,
+                    min_level = ?, reorder_qty = ?, category = ?, active = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (
+                    payload["part_id"],
+                    payload["name"],
+                    payload["description"],
+                    payload["unit"],
+                    payload["quantity"],
+                    payload["location"],
+                    payload["min_level"],
+                    payload["reorder_qty"],
+                    payload["category"],
+                    payload["active"],
+                    payload["id"],
+                ),
+            )
+
+        for payload in prepared_new:
+            c.execute(
+                """
+                INSERT INTO parts (
+                    part_id, name, description, unit, quantity, location, min_level, reorder_qty, category, active
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    payload["part_id"],
+                    payload["name"],
+                    payload["description"],
+                    payload["unit"],
+                    payload["quantity"],
+                    payload["location"],
+                    payload["min_level"],
+                    payload["reorder_qty"],
+                    payload["category"],
+                    payload["active"],
+                ),
+            )
+
+        conn.commit()
+        sync_parts_snapshot_csv(conn)
+        return {"updated": len(prepared_existing), "inserted": len(prepared_new)}
+    except sqlite3.IntegrityError as exc:
+        conn.rollback()
+        raise ValueError(f"Save failed due to a duplicate item code: {exc}")
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def pick_material(conn, part_id, machine_serials, performed_by, performed_role, purpose, note="", returnable=False):

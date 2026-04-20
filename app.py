@@ -8,7 +8,6 @@ from st_keyup import st_keyup
 from db import (
     analyze_parts_import,
     bootstrap_parts_catalog,
-    delete_part,
     deposit_stock,
     get_conn,
     get_dashboard_metrics,
@@ -29,7 +28,7 @@ from db import (
     pick_material,
     return_issue_material,
     rows_to_dicts,
-    save_part,
+    save_master_table,
     DB_PATH,
     ITEMS_SNAPSHOT_CSV_PATH,
     sync_parts_snapshot_csv,
@@ -42,11 +41,35 @@ st.set_page_config(
     initial_sidebar_state="auto",
 )
 
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+LOGO_PATH = os.path.join(APP_DIR, "assets", "eqvimech_logo.svg")
 RESET_EMPTY_MARKER = ".reset_empty_app"
+MASTER_SAVE_PASSWORD = "7089"
+MASTER_TABLE_COLUMNS = [
+    "id",
+    "part_id",
+    "name",
+    "description",
+    "unit",
+    "quantity",
+    "location",
+    "min_level",
+    "reorder_qty",
+    "category",
+    "active",
+]
+MASTER_CATEGORY_OPTIONS = ["Hardware", "Electronics", "Metals", "Others"]
 
 
 def safe_rerun():
     getattr(st, "rerun", getattr(st, "experimental_rerun", lambda: None))()
+
+
+def render_brand_logo(width=220):
+    if os.path.exists(LOGO_PATH):
+        st.image(LOGO_PATH, width=width)
+    else:
+        st.markdown("## EQVIMECH")
 
 
 def live_search_input(label, placeholder, key):
@@ -82,6 +105,49 @@ def format_import_summary(summary, prefix="Import complete"):
     if summary["invalid_rows"]:
         parts.append(f"{summary['invalid_rows']} invalid row(s)")
     return prefix + ": " + ", ".join(parts) + "."
+
+
+def build_master_table_dataframe(conn):
+    rows = rows_to_dicts(get_parts(conn, active_only=False))
+    prepared = []
+    for row in rows:
+        prepared.append(
+            {
+                "id": int(row.get("id", 0)),
+                "part_id": str(row.get("part_id", "") or "").strip(),
+                "name": str(row.get("name", "") or "").strip(),
+                "description": str(row.get("description", "") or "").strip(),
+                "unit": str(row.get("unit", "Nos") or "Nos").strip() or "Nos",
+                "quantity": int(row.get("quantity", 0) or 0),
+                "location": str(row.get("location", "") or "").strip(),
+                "min_level": int(row.get("min_level", 0) or 0),
+                "reorder_qty": int(row.get("reorder_qty", 0) or 0),
+                "category": str(row.get("category", "Others") or "Others").strip() or "Others",
+                "active": bool(row.get("active", 1)),
+            }
+        )
+    return pd.DataFrame(prepared, columns=MASTER_TABLE_COLUMNS)
+
+
+def blank_master_table_row():
+    return {
+        "id": None,
+        "part_id": "",
+        "name": "",
+        "description": "",
+        "unit": "Nos",
+        "quantity": 0,
+        "location": "",
+        "min_level": 0,
+        "reorder_qty": 0,
+        "category": "Others",
+        "active": True,
+    }
+
+
+def reset_master_table_draft(conn):
+    st.session_state["im_master_table_df"] = build_master_table_dataframe(conn)
+    st.session_state.pop("im_master_editor", None)
 
 
 def style_import_preview_dataframe(dataframe):
@@ -336,6 +402,60 @@ def inject_theme():
             letter-spacing: 0.1em;
             margin: 1.2rem 0 0.5rem 0;
         }
+        .brand-header {
+            display: flex;
+            align-items: center;
+            gap: 0.9rem;
+            margin-bottom: 0.8rem;
+        }
+        .brand-title {
+            color: #0f172a;
+            font-size: 1.7rem;
+            font-weight: 800;
+            line-height: 1.1;
+        }
+        .brand-subtitle {
+            color: #64748b;
+            font-size: 0.9rem;
+            font-weight: 600;
+            line-height: 1.3;
+        }
+        .role-card {
+            border: 1px solid #dbe3ee;
+            border-radius: 14px;
+            padding: 0.9rem 0.9rem 0.8rem 0.9rem;
+            background: #ffffff;
+            min-height: 132px;
+            margin-bottom: 0.45rem;
+        }
+        .role-card-active {
+            border-color: #0d9488;
+            box-shadow: 0 0 0 2px rgba(13,148,136,0.12);
+            background: #f0fdfa;
+        }
+        .role-card-title {
+            color: #0f172a;
+            font-size: 1rem;
+            font-weight: 800;
+            margin-bottom: 0.2rem;
+        }
+        .role-card-copy {
+            color: #475569;
+            font-size: 0.82rem;
+            line-height: 1.35;
+        }
+        .role-card-badge {
+            display: inline-block;
+            margin-top: 0.5rem;
+            padding: 0.2rem 0.55rem;
+            border-radius: 999px;
+            background: #e2e8f0;
+            color: #334155;
+            font-size: 0.72rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+        }
 
         /* ── Divider ── */
         hr { margin: 0.9rem 0 !important; }
@@ -361,6 +481,7 @@ def inject_theme():
             .item-card { padding: 0.85rem 0.9rem; }
             h1 { font-size: 1.25rem !important; }
             .metric-value { font-size: 1.35rem !important; }
+            .brand-title { font-size: 1.35rem !important; }
         }
         </style>
         """,
@@ -431,7 +552,6 @@ def show_manager_password_dialog():
         if password == "321":
             st.session_state["manager_authenticated"] = True
             st.session_state["role"] = "manager"
-            st.session_state["role_selector"] = "manager"
             st.session_state.pop("manager_login_requested", None)
             st.session_state.pop("manager_password_input", None)
             safe_rerun()
@@ -441,7 +561,6 @@ def show_manager_password_dialog():
     if cancel_col.button("Cancel", key="manager_cancel", type="secondary"):
         st.session_state["manager_authenticated"] = False
         st.session_state["role"] = "user"
-        st.session_state["role_selector"] = "user"
         st.session_state.pop("manager_login_requested", None)
         st.session_state.pop("manager_password_input", None)
         safe_rerun()
@@ -451,30 +570,63 @@ def sidebar_identity(conn):
     with st.sidebar:
         if "role" not in st.session_state:
             st.session_state["role"] = "user"
-        if "role_selector" not in st.session_state:
-            st.session_state["role_selector"] = st.session_state["role"]
-
-        st.markdown("### 🏭 Eqvimech")
+        render_brand_logo(width=190)
         st.markdown("---")
-        selected_role = st.selectbox(
-            "Role",
-            ("user", "manager"),
-            key="role_selector",
-        )
 
-        if selected_role == "manager":
-            if st.session_state.get("manager_authenticated"):
-                st.session_state["role"] = "manager"
-                st.session_state["user"] = "manager"
-            else:
+        current_role = st.session_state.get("role", "user")
+        manager_ready = bool(st.session_state.get("manager_authenticated"))
+        st.caption("Choose access")
+        user_col, manager_col = st.columns(2)
+        with user_col:
+            user_active = current_role == "user"
+            st.markdown(
+                f"""
+                <div class="role-card {'role-card-active' if user_active else ''}">
+                    <div class="role-card-title">User</div>
+                    <div class="role-card-copy">Browse items, issue material, return items, and view history.</div>
+                    <div class="role-card-badge">{'Active' if user_active else 'Standard access'}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            if st.button("Use User", key="role_user_card", use_container_width=True, type="secondary"):
                 st.session_state["role"] = "user"
                 st.session_state["user"] = "operator"
-                st.session_state["manager_login_requested"] = True
-        else:
+                st.session_state["manager_authenticated"] = False
+                st.session_state.pop("manager_login_requested", None)
+                safe_rerun()
+        with manager_col:
+            manager_active = current_role == "manager" and manager_ready
+            st.markdown(
+                f"""
+                <div class="role-card {'role-card-active' if manager_active else ''}">
+                    <div class="role-card-title">Manager</div>
+                    <div class="role-card-copy">Unlock inward stock, dashboard, alerts, and full master controls.</div>
+                    <div class="role-card-badge">{'Unlocked' if manager_active else 'Password required'}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            if st.button(
+                "Use Manager" if not manager_active else "Manager Active",
+                key="role_manager_card",
+                use_container_width=True,
+                type="primary" if manager_active else "secondary",
+            ):
+                if manager_ready:
+                    st.session_state["role"] = "manager"
+                    st.session_state["user"] = "manager"
+                else:
+                    st.session_state["role"] = "user"
+                    st.session_state["user"] = "operator"
+                    st.session_state["manager_login_requested"] = True
+                safe_rerun()
+
+        if not manager_ready and st.session_state.get("role") != "manager":
             st.session_state["role"] = "user"
             st.session_state["user"] = "operator"
-            st.session_state["manager_authenticated"] = False
-            st.session_state.pop("manager_login_requested", None)
+        elif manager_ready and st.session_state.get("role") == "manager":
+            st.session_state["user"] = "manager"
 
         st.markdown("---")
         st.caption(f"Access: **{st.session_state['role'].capitalize()}**")
@@ -629,6 +781,7 @@ def show_item_details_dialog(conn):
             <div class="pill-row">
                 <span class="pill p-neutral">{part['part_id']}</span>
                 <span class="pill p-neutral">Location: {part['location']}</span>
+                <span class="pill p-neutral">Category: {safe_part_field(part, 'category', 'Others')}</span>
                 <span class="pill p-neutral">Unit: {part['unit']}</span>
                 <span class="pill p-neutral">Min {part['min_level']} &nbsp;&middot;&nbsp; Reorder {part['reorder_qty']}</span>
                 {stock_pill(part['quantity'], part['min_level'])}
@@ -659,6 +812,7 @@ def show_pick_dialog(conn):
             <div class="item-desc">{part['description']}</div>
             <div class="pill-row">
                 <span class="pill p-neutral">Location: {part['location']}</span>
+                <span class="pill p-neutral">Category: {safe_part_field(part, 'category', 'Others')}</span>
                 {stock_pill(part['quantity'], part['min_level'])}
                 <span class="pill p-neutral">Min {part['min_level']} &nbsp;&middot;&nbsp; Reorder {part['reorder_qty']}</span>
             </div>
@@ -780,10 +934,10 @@ def show_deposit_dialog(conn):
             <div class="item-name">{part['name']}</div>
             <div class="item-desc">{part['description']}</div>
             <div class="pill-row">
-                {stock_pill(part['quantity'], part['min_level'])}
                 <span class="pill p-neutral">Location: {part['location']}</span>
-                <span class="pill p-neutral">Unit: {part['unit']}</span>
                 <span class="pill p-neutral">Category: {safe_part_field(part, 'category', 'Others')}</span>
+                <span class="pill p-neutral">Unit: {part['unit']}</span>
+                {stock_pill(part['quantity'], part['min_level'])}
             </div>
         </div>
         """,
@@ -927,6 +1081,7 @@ def show_import_review_dialog(conn):
         disabled=not preview["can_import"],
     ):
         result = import_parts_from_csv(conn, preview["records"])
+        reset_master_table_draft(conn)
         st.session_state["im_import_result"] = result
         clear_import_review_state(reset_uploader=True)
         safe_rerun()
@@ -1011,8 +1166,9 @@ def items_page(conn):
         "items_dialog_part_id",
         "items_browser",
         "Type item name, ID, description or location…",
-        category_key="im_category",
     )
+    if st.session_state.get("items_dialog_part_id"):
+        show_item_details_dialog(conn)
 
 def pick_material_page(conn):
     # ── Success state: shown after a confirmed issue to prevent double-press ──
@@ -1057,7 +1213,6 @@ def pick_material_page(conn):
         "pick_dialog_part_id",
         "pick_browser",
         "Type item name, ID, description or location…",
-        category_key="pick_category",
     )
     if st.session_state.get("pick_dialog_part_id"):
         show_pick_dialog(conn)
@@ -1101,21 +1256,33 @@ def deposit_stock_page(conn):
         "deposit_dialog_part_id",
         "deposit_browser",
         "Type item name, ID, description or location…",
-        category_key="deposit_category",
     )
     if st.session_state.get("deposit_dialog_part_id"):
         show_deposit_dialog(conn)
 
 
 def item_master_page(conn):
-    parts = get_parts(conn, active_only=False)
+    if "im_master_table_df" not in st.session_state:
+        reset_master_table_draft(conn)
 
-    action_col, status_col = st.columns([0.28, 0.72])
-    if action_col.button("＋ New item", key="im_new_item", type="secondary"):
-        st.session_state.pop("im_selected_id", None)
-        st.session_state.pop("im_confirm_delete", None)
+    if st.session_state.pop("im_master_refresh_requested", False):
+        reset_master_table_draft(conn)
+
+    save_notice = st.session_state.pop("im_master_save_notice", None)
+    if save_notice:
+        st.success(save_notice)
+
+    top_left, top_mid, top_right = st.columns([0.24, 0.24, 0.52])
+    if top_left.button("Add blank row", key="im_add_row", type="secondary"):
+        draft_df = st.session_state.get("im_master_table_df", build_master_table_dataframe(conn)).copy()
+        draft_df = pd.concat([draft_df, pd.DataFrame([blank_master_table_row()])], ignore_index=True)
+        st.session_state["im_master_table_df"] = draft_df[MASTER_TABLE_COLUMNS]
+        st.session_state.pop("im_master_editor", None)
         safe_rerun()
-    if action_col.button("Auto-classify categories", key="im_autoclass", type="secondary"):
+    if top_mid.button("Refresh from DB", key="im_refresh_table", type="secondary"):
+        st.session_state["im_master_refresh_requested"] = True
+        safe_rerun()
+    if top_right.button("Auto-classify categories", key="im_autoclass", type="secondary"):
         try:
             preview = auto_classify_parts(conn, apply=False)
             st.session_state["im_autoclass_preview"] = preview
@@ -1123,126 +1290,57 @@ def item_master_page(conn):
         except Exception as exc:
             st.error(str(exc))
 
-    search_term = live_search_input(
-        "Search items for master edit",
-        "Type item name, ID, description or location…",
-        "im_search",
+    st.caption("Edit any item directly in the table below. Save is allowed only with password 7089.")
+
+    draft_df = st.session_state.get("im_master_table_df", build_master_table_dataframe(conn))
+    edited_df = st.data_editor(
+        draft_df,
+        key="im_master_editor",
+        use_container_width=True,
+        hide_index=True,
+        height=420,
+        num_rows="fixed",
+        column_order=MASTER_TABLE_COLUMNS,
+        disabled=["id"],
+        column_config={
+            "id": st.column_config.NumberColumn("ID", help="Internal row ID", disabled=True, width="small"),
+            "part_id": st.column_config.TextColumn("Item Code", required=True),
+            "name": st.column_config.TextColumn("Name", required=True, width="medium"),
+            "description": st.column_config.TextColumn("Description", width="large"),
+            "unit": st.column_config.TextColumn("Unit", width="small"),
+            "quantity": st.column_config.NumberColumn("Quantity", min_value=0, step=1, format="%d"),
+            "location": st.column_config.TextColumn("Location", width="medium"),
+            "min_level": st.column_config.NumberColumn("Min Level", min_value=0, step=1, format="%d"),
+            "reorder_qty": st.column_config.NumberColumn("Reorder Qty", min_value=0, step=1, format="%d"),
+            "category": st.column_config.SelectboxColumn("Category", options=MASTER_CATEGORY_OPTIONS, required=True),
+            "active": st.column_config.CheckboxColumn("Active"),
+        },
     )
-    matches = filter_parts(parts, search_term)
+    st.session_state["im_master_table_df"] = edited_df[MASTER_TABLE_COLUMNS]
 
-    with status_col:
-        current_id = st.session_state.get("im_selected_id")
-        current = get_part(conn, current_id) if current_id else None
-        if current:
-            st.caption(f"Editing: {current['name']} (code: {current['part_id']})")
+    save_col, password_col = st.columns([0.26, 0.74])
+    save_clicked = save_col.button("Save table", key="im_save_table", type="primary")
+    master_password = password_col.text_input(
+        "Save password",
+        type="password",
+        placeholder="Enter 7089 to save all edits",
+        key="im_master_password",
+    )
+
+    if save_clicked:
+        if master_password != MASTER_SAVE_PASSWORD:
+            st.error("Incorrect save password.")
         else:
-            st.caption("Creating a new item")
-
-    with st.container(height=300, border=True):
-        if not matches:
-            st.info("No items matched your search.")
-        else:
-            for part in matches:
-                if st.button(
-                    part_list_label(part),
-                    key=f"im_pick_{part['part_id']}",
-                    use_container_width=True,
-                    type="secondary",
-                ):
-                    st.session_state["im_selected_id"] = part["part_id"]
-                    st.session_state.pop("im_confirm_delete", None)
-                    safe_rerun()
-
-    current_id = st.session_state.get("im_selected_id")
-    current = get_part(conn, current_id) if current_id else None
-
-    st.markdown("---")
-
-    with st.form("item_master_form"):
-        col1, col2 = st.columns(2)
-        with col1:
-            part_id = st.text_input(
-                "Item Code *",
-                value="" if current is None else current["part_id"],
-                disabled=current is not None,
-            )
-            name = st.text_input("Item name *", value="" if current is None else current["name"])
-            category_options = ["Hardware", "Electronics", "Metals", "Others"]
-            initial_cat = "Others" if current is None else safe_part_field(current, "category", "Others")
             try:
-                idx = category_options.index(initial_cat) if initial_cat in category_options else category_options.index("Others")
-            except Exception:
-                idx = 3
-            category = st.selectbox("Category", category_options, index=idx)
-            unit = st.text_input("Unit", value="Nos" if current is None else current["unit"])
-            location = st.text_input("Location", value="" if current is None else current["location"])
-        with col2:
-            quantity = st.number_input(
-                "Opening stock",
-                min_value=0,
-                value=0 if current is None else int(current["quantity"]),
-                step=1,
-            )
-            min_level = st.number_input(
-                "Min stock level",
-                min_value=0,
-                value=0 if current is None else int(current["min_level"]),
-                step=1,
-            )
-            reorder_qty = st.number_input(
-                "Reorder quantity",
-                min_value=0,
-                value=0 if current is None else int(current["reorder_qty"]),
-                step=1,
-            )
-            active = st.checkbox("Active", value=True if current is None else bool(current["active"]))
-        description = st.text_area("Description", value="" if current is None else current["description"])
-
-        if st.form_submit_button("💾  Save Item"):
-            pid = current["part_id"] if current else part_id.strip()
-            if not pid:
-                st.error("Item Code is required.")
-            elif not name.strip():
-                st.error("Item name is required.")
-            else:
-                save_part(
-                    conn,
-                    {
-                        "part_id": pid,
-                        "name": name.strip(),
-                        "description": description.strip(),
-                        "unit": unit.strip() or "Nos",
-                        "category": category,
-                        "quantity": int(quantity),
-                        "location": location.strip(),
-                        "min_level": int(min_level),
-                        "reorder_qty": int(reorder_qty),
-                        "active": 1 if active else 0,
-                    },
+                result = save_master_table(conn, edited_df.to_dict("records"))
+                reset_master_table_draft(conn)
+                st.session_state["im_master_password"] = ""
+                st.session_state["im_master_save_notice"] = (
+                    f"Master table saved. {result['updated']} row(s) updated, {result['inserted']} row(s) added."
                 )
-                st.session_state["im_selected_id"] = pid
-                st.success("Item saved.")
                 safe_rerun()
-
-    # ── Delete ────────────────────────────────────────────────────────────
-    if current is not None:
-        st.markdown("---")
-        st.markdown("**Delete item**")
-        st.caption("Soft-deletes the item; all history is preserved.")
-        if st.button("🗑️  Delete this item", key="im_delete", type="secondary"):
-            st.session_state["im_confirm_delete"] = True
-        if st.session_state.get("im_confirm_delete"):
-            st.warning(f"Are you sure you want to delete **{current['name']}**? This cannot be undone.")
-            c1, c2 = st.columns(2)
-            if c1.button("Yes, delete", key="im_delete_yes", type="primary"):
-                delete_part(conn, current["part_id"])
-                st.success("Item deleted.")
-                st.session_state.pop("im_confirm_delete", None)
-                st.session_state.pop("im_selected_id", None)
-                safe_rerun()
-            if c2.button("Cancel", key="im_delete_no"):
-                st.session_state.pop("im_confirm_delete", None)
-                safe_rerun()
+            except Exception as exc:
+                st.error(str(exc))
 
     # ── CSV Export / Import ───────────────────────────────────────────────
     st.markdown("---")
@@ -1280,6 +1378,7 @@ def item_master_page(conn):
             if c1.button("Apply suggested categories", key="im_autoclass_apply"):
                 try:
                     result = auto_classify_parts(conn, apply=True)
+                    reset_master_table_draft(conn)
                     st.success(f"Applied {result['updated']} category updates")
                     st.session_state.pop("im_autoclass_preview", None)
                     safe_rerun()
@@ -1502,7 +1601,21 @@ def main():
     alerts = low_stock_alerts(conn)
 
     # header row
-    st.markdown("## 🏗️ Eqvimech Inventory")
+    brand_col, title_col = st.columns([0.18, 0.82])
+    with brand_col:
+        render_brand_logo(width=120)
+    with title_col:
+        st.markdown(
+            """
+            <div class="brand-header">
+                <div>
+                    <div class="brand-title">Eqvimech Inventory</div>
+                    <div class="brand-subtitle">Machine spares, inward stock, issue tracking, and launch-ready controls.</div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
     if alerts:
         st.markdown(
             f'<div class="low-stock-banner">'

@@ -1,21 +1,21 @@
-item_code,name,description,unit,quantity,location,min_level,reorder_qty,active
-NUT-R32,Ballscrew Nut R32,Flanged nut for R32 ballscrew | Make: Hiwin | Single nut,Nos,15,Bin B1,5,10,1
-NUT-R40,Ballscrew Nut R40,Flanged nut for R40 ballscrew | Make: Hiwin | Single nut,Nos,12,Bin B1,5,10,1
-BS-R25-890,Ballscrew R25,Ballscrew R25-5-890 | Make: Hiwin | Dia: 25mm | Lead: 5mm | Length: 890mm,Nos,10,Rack A - Shelf 1,3,5,1
-Ballscrew-R25,Ballscrew R25,Ballscrew R25-5-890-05.05 | Make: Hiwin,Nos,122,Shelf 1,1,5,1
-BS-R32-1000,Ballscrew R32,Ballscrew R32-5-1000 | Make: Hiwin | Dia: 32mm | Lead: 5mm | Length: 1000mm,Nos,8,Rack A - Shelf 1,2,4,1
-Ballscrew-R32,Ballscrew R32,R32-10-1340-1340-0.05 | Make: Hiwin,Nos,0,Shelf 2,1,5,1
-BS-R40-1200,Ballscrew R40,Ballscrew R40-10-1200 | Make: Hiwin | Dia: 40mm | Lead: 10mm | Length: 1200mm,Nos,5,Rack A - Shelf 2,2,3,1
-Ballscrew-R40,Ballscrew R40,R40-10-1340-1340-0.05 | Make: Hiwin,Nos,1,Shelf 2,2,5,1
-Ballscrew-R50,Ballscrew R50,R50-10-1600-0.05 | Make: Hiwin,Nos,4,Shelf 3,2,5,1
-BRG-6205,Bearing 6205-2RS,Deep groove ball bearing 6205-2RS | ID: 25mm OD: 52mm W: 15mm,Nos,30,Bin D1,10,20,1
-BRG-6305,Bearing 6305-ZZ,Deep groove ball bearing 6305-ZZ | ID: 25mm OD: 62mm W: 17mm,Nos,20,Bin D2,8,15,1
-COUP-25-32,Jaw Coupling 25-32,Flexible jaw coupling | Bore: 25mm-32mm | Aluminium body,Nos,8,Bin E1,3,5,1
-LBK-20,Linear Guide Block 20,Carriage block for 20mm linear rail | Make: THK | Model: HSR20,Nos,20,Bin C1,5,10,1
-LBR-20-1000,Linear Guide Rail 20,Linear guide rail 20mm width | Length: 1000mm | Make: THK,Nos,6,Rack B - Shelf 1,2,4,1
-NutR32,Nut R32,R32-10T3-FSI | Make: Hiwin,Nos,101,Shelf 1,1,5,1
-SERVO-CABLE-5M,Servo Motor Cable 5m,Servo motor encoder+power cable | 5 metre | 4-pin+encoder,Nos,5,Cabinet F1,2,4,1
-OIL-MOBIL-1L,Spindle Oil Mobil Vactra 2,Way lubricating oil Mobil Vactra No. 2 | 1 litre bottle,Ltrs,20,Cabinet J1,5,10,1
-MOTOR-BRKT-86,Stepper Motor Bracket 86mm,NEMA 34 (86mm) stepper motor mounting bracket | Steel,Nos,6,Shelf H1,2,4,1
-HTG-T5-1000,Timing Belt T5 1000,Open-end timing belt T5 profile | Width: 25mm | Length: 1000mm,Mtrs,10,Shelf G1,3,6,1
-HTG-T5-PULLY-32,Timing Pulley T5-32T,T5 timing pulley 32 teeth | Bore: 19mm | Aluminium,Nos,12,Shelf G2,4,8,1
+item_code,name,description,unit,quantity,location,min_level,reorder_qty,category,active
+NUT-R32,Ballscrew Nut R32,Flanged nut for R32 ballscrew | Make: Hiwin | Single nut,Nos,15,Bin B1,5,10,Hardware,1
+NUT-R40,Ballscrew Nut R40,Flanged nut for R40 ballscrew | Make: Hiwin | Single nut,Nos,12,Bin B1,5,10,Hardware,1
+BS-R25-890,Ballscrew R25,Ballscrew R25-5-890 | Make: Hiwin | Dia: 25mm | Lead: 5mm | Length: 890mm,Nos,10,Rack A - Shelf 1,3,5,Hardware,1
+Ballscrew-R25,Ballscrew R25,Ballscrew R25-5-890-05.05 | Make: Hiwin,Nos,122,Shelf 1,1,5,Hardware,1
+BS-R32-1000,Ballscrew R32,Ballscrew R32-5-1000 | Make: Hiwin | Dia: 32mm | Lead: 5mm | Length: 1000mm,Nos,8,Rack A - Shelf 1,2,4,Hardware,1
+Ballscrew-R32,Ballscrew R32,R32-10-1340-1340-0.05 | Make: Hiwin,Nos,0,Shelf 2,1,5,Hardware,1
+BS-R40-1200,Ballscrew R40,Ballscrew R40-10-1200 | Make: Hiwin | Dia: 40mm | Lead: 10mm | Length: 1200mm,Nos,5,Rack A - Shelf 2,2,3,Hardware,1
+Ballscrew-R40,Ballscrew R40,R40-10-1340-1340-0.05 | Make: Hiwin,Nos,1,Shelf 2,2,5,Hardware,1
+Ballscrew-R50,Ballscrew R50,R50-10-1600-0.05 | Make: Hiwin,Nos,4,Shelf 3,2,5,Hardware,1
+BRG-6205,Bearing 6205-2RS,Deep groove ball bearing 6205-2RS | ID: 25mm OD: 52mm W: 15mm,Nos,30,Bin D1,10,20,Hardware,1
+BRG-6305,Bearing 6305-ZZ,Deep groove ball bearing 6305-ZZ | ID: 25mm OD: 62mm W: 17mm,Nos,20,Bin D2,8,15,Hardware,1
+COUP-25-32,Jaw Coupling 25-32,Flexible jaw coupling | Bore: 25mm-32mm | Aluminium body,Nos,8,Bin E1,3,5,Hardware,1
+LBK-20,Linear Guide Block 20,Carriage block for 20mm linear rail | Make: THK | Model: HSR20,Nos,20,Bin C1,5,10,Hardware,1
+LBR-20-1000,Linear Guide Rail 20,Linear guide rail 20mm width | Length: 1000mm | Make: THK,Nos,6,Rack B - Shelf 1,2,4,Hardware,1
+NutR32,Nut R32,R32-10T3-FSI | Make: Hiwin,Nos,101,Shelf 1,1,5,Hardware,1
+SERVO-CABLE-5M,Servo Motor Cable 5m,Servo motor encoder+power cable | 5 metre | 4-pin+encoder,Nos,5,Cabinet F1,2,4,Electronics,1
+OIL-MOBIL-1L,Spindle Oil Mobil Vactra 2,Way lubricating oil Mobil Vactra No. 2 | 1 litre bottle,Ltrs,20,Cabinet J1,5,10,Hardware,1
+MOTOR-BRKT-86,Stepper Motor Bracket 86mm,NEMA 34 (86mm) stepper motor mounting bracket | Steel,Nos,6,Shelf H1,2,4,Hardware,1
+HTG-T5-1000,Timing Belt T5 1000,Open-end timing belt T5 profile | Width: 25mm | Length: 1000mm,Mtrs,10,Shelf G1,3,6,Others,1
+HTG-T5-PULLY-32,Timing Pulley T5-32T,T5 timing pulley 32 teeth | Bore: 19mm | Aluminium,Nos,12,Shelf G2,4,8,Hardware,1
