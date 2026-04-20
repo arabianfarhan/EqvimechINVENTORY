@@ -262,6 +262,13 @@ def sync_parts_snapshot_csv(conn, active_only=False):
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
+            # sqlite3.Row does not implement .get(), so access safely
+            try:
+                category = row["category"]
+            except Exception:
+                category = None
+            if category is None:
+                category = "Others"
             writer.writerow(
                 {
                     "item_code": row["part_id"],
@@ -272,7 +279,7 @@ def sync_parts_snapshot_csv(conn, active_only=False):
                     "location": row["location"],
                     "min_level": row["min_level"],
                     "reorder_qty": row["reorder_qty"],
-                    "category": row.get("category", "Others"),
+                    "category": category,
                     "active": row["active"],
                 }
             )
