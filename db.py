@@ -600,6 +600,9 @@ def deposit_stock(conn, part_id, qty, performed_by, performed_role, note=""):
 
 def return_issue_material(conn, issue_tx_id, performed_by, performed_role, note=""):
     c = conn.cursor()
+    if (performed_role or "").strip().lower() != "manager":
+        raise ValueError("Only managers can return material")
+
     issue = c.execute("SELECT * FROM transactions WHERE id = ?", (issue_tx_id,)).fetchone()
     if issue is None:
         raise ValueError("Issue record not found")
