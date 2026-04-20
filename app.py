@@ -544,6 +544,24 @@ def part_list_label(part):
     return name
 
 
+def _show_arrow_animation_once(key_prefix="pick"):
+    # key_prefix: 'pick' or 'deposit'
+    flag_key = f"{key_prefix}_animation_shown"
+    if st.session_state.get(flag_key):
+        return
+    html = """
+    <div style='text-align:center; pointer-events:none; margin: .8rem 0'>
+      <div class='eq-arrow'></div>
+    </div>
+    <style>
+    .eq-arrow{width:0;height:0;border-left:36px solid transparent;border-right:36px solid transparent;border-bottom:60px solid #10b981;margin:0 auto;animation:eq-up 1200ms ease-out;}
+    @keyframes eq-up{0%{transform:translateY(40px);opacity:0}50%{opacity:1}100%{transform:translateY(-120px);opacity:0}}
+    </style>
+    """
+    st.markdown(html, unsafe_allow_html=True)
+    st.session_state[flag_key] = True
+
+
 def render_part_picker(parts, search_key, dialog_key, button_prefix, placeholder):
     search_term = live_search_input("Search item", placeholder, search_key)
     matches = filter_parts(parts, search_term)
@@ -767,11 +785,15 @@ def show_deposit_dialog(conn):
                     st.session_state["role"],
                     note.strip(),
                 )
+                # record deposit done state so we can show animation on the main page
+                st.session_state["deposit_done"] = {
+                    "part": part["name"],
+                    "qty": int(qty),
+                    "balance": new_balance,
+                    "unit": part["unit"],
+                }
+                st.session_state["deposit_animation_shown"] = False
                 st.session_state.pop("deposit_dialog_part_id", None)
-                st.success(
-                    f"✅  Deposited {int(qty)} × {part['name']}  |  "
-                    f"New balance: **{new_balance} {part['unit']}**"
-                )
                 safe_rerun()
             except Exception as exc:
                 st.error(str(exc))
@@ -967,10 +989,9 @@ def pick_material_page(conn):
     # ── Success state: shown after a confirmed issue to prevent double-press ──
     done = st.session_state.get("pick_done")
     if done:
-        # show the celebration animation only once per completed pick
+        # show the arrow animation only once per completed pick
         if not st.session_state.get("pick_animation_shown"):
-            st.balloons()
-            st.session_state["pick_animation_shown"] = True
+            _show_arrow_animation_once("pick")
         st.markdown(
             f"""
             <div style="background:#dcfce7;border:2px solid #16a34a;border-radius:12px;
@@ -1013,6 +1034,32 @@ def pick_material_page(conn):
 
 
 def deposit_stock_page(conn):
+    # show completed deposit/inward state if present
+    deposit_done = st.session_state.get("deposit_done")
+    if deposit_done:
+        # show the arrow animation only once
+        if not st.session_state.get("deposit_animation_shown"):
+            _show_arrow_animation_once("deposit")
+        st.markdown(
+            f"""
+            <div style="background:#dcfce7;border:2px solid #16a34a;border-radius:12px;padding:2rem;text-align:center;margin:1rem 0">
+                <div style="font-size:2.8rem">📥</div>
+                <div style="font-size:1.5rem;font-weight:800;color:#15803d">Inwarded Successfully!</div>
+                <div style="font-size:1rem;color:#166534;margin-top:.6rem">
+                    <strong>{deposit_done['qty']}</strong> × {deposit_done['part']} inwarded
+                    &nbsp;|&nbsp; New balance:
+                    <strong>{deposit_done['balance']} {deposit_done['unit']}</strong>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if st.button("← Inward another item", key="inward_another", type="secondary"):
+            st.session_state.pop("deposit_done", None)
+            st.session_state.pop("deposit_animation_shown", None)
+            safe_rerun()
+        return
+
     parts = get_parts(conn, active_only=False)
     if not parts:
         st.info("Add items via Item Master before depositing stock.")
