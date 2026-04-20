@@ -1029,13 +1029,26 @@ def item_master_page(conn):
             try:
                 import_df = pd.read_csv(uploaded, dtype=str).fillna("")
                 records = import_df.to_dict("records")
-                inserted, updated, errors = import_parts_from_csv(conn, records)
-                if errors:
-                    st.warning(
-                        f"Imported with {len(errors)} error(s): {'; '.join(errors[:3])}"
-                    )
+                summary = import_parts_from_csv(conn, records)
+                message_parts = [
+                    f"{summary['inserted']} new",
+                    f"{summary['updated']} updated",
+                    f"{summary['unchanged']} unchanged",
+                ]
+                if summary["duplicate_rows"]:
+                    message_parts.append(f"{summary['duplicate_rows']} duplicate row(s) skipped")
+                if summary["invalid_rows"]:
+                    message_parts.append(f"{summary['invalid_rows']} invalid row(s)")
+
+                status_text = "Import complete: " + ", ".join(message_parts) + "."
+                if summary["duplicate_rows"] or summary["invalid_rows"]:
+                    preview = "; ".join(summary["messages"][:3])
+                    if preview:
+                        st.warning(f"{status_text} {preview}")
+                    else:
+                        st.warning(status_text)
                 else:
-                    st.success(f"✅  {inserted} new item(s) added, {updated} updated.")
+                    st.success(f"✅  {status_text}")
                 safe_rerun()
             except Exception as exc:
                 st.error(f"Import failed: {exc}")

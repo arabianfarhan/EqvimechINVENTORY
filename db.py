@@ -606,43 +606,85 @@ def rows_to_dicts(rows):
     return [dict(r) for r in rows]
 
 
+def _normalize_part_payload(row):
+    return {
+        "part_id": str(row.get("part_id", "")).strip(),
+        "name": str(row.get("name", "")).strip(),
+        "description": str(row.get("description", "")).strip(),
+        "unit": str(row.get("unit", "Nos")).strip() or "Nos",
+        "quantity": int(row.get("quantity", 0) or 0),
+        "location": str(row.get("location", "")).strip(),
+        "min_level": int(row.get("min_level", 0) or 0),
+        "reorder_qty": int(row.get("reorder_qty", 0) or 0),
+        "active": int(row.get("active", 1) or 1),
+    }
+
+
+def _part_matches_payload(existing, payload):
+    if existing is None:
+        return False
+
+    return (
+        str(existing["part_id"]).strip() == payload["part_id"]
+        and str(existing["name"] or "").strip() == payload["name"]
+        and str(existing["description"] or "").strip() == payload["description"]
+        and str(existing["unit"] or "Nos").strip() == payload["unit"]
+        and int(existing["quantity"] or 0) == payload["quantity"]
+        and str(existing["location"] or "").strip() == payload["location"]
+        and int(existing["min_level"] or 0) == payload["min_level"]
+        and int(existing["reorder_qty"] or 0) == payload["reorder_qty"]
+        and int(existing["active"] or 0) == payload["active"]
+    )
+
+
 def import_parts_from_csv(conn, records):
     """
     Upsert parts from a list of dicts (from CSV import).
     Required keys: part_id, name.
     Optional: description, unit, quantity, location, min_level, reorder_qty, active.
-    Returns (inserted, updated, skipped_errors) counts.
+    Returns a summary dict with inserted/updated/unchanged/duplicate_rows/invalid_rows counts.
     """
-    inserted = updated = errors = 0
-    for row in records:
+    summary = {
+        "inserted": 0,
+        "updated": 0,
+        "unchanged": 0,
+        "duplicate_rows": 0,
+        "invalid_rows": 0,
+        "messages": [],
+    }
+    seen_part_ids = set()
+
+    for row_number, row in enumerate(records, start=2):
         try:
-            part_id = str(row.get("part_id", "")).strip()
-            name = str(row.get("name", "")).strip()
+            payload = _normalize_part_payload(row)
+            part_id = payload["part_id"]
+            name = payload["name"]
+
             if not part_id or not name:
-                errors += 1
+                summary["invalid_rows"] += 1
+                summary["messages"].append(f"Row {row_number}: missing item ID or name")
                 continue
 
-            # Determine whether this part exists before attempting save
-            existed_before = True if get_part(conn, part_id) else False
+            if part_id in seen_part_ids:
+                summary["duplicate_rows"] += 1
+                summary["messages"].append(f"Row {row_number}: duplicate item ID in CSV ({part_id})")
+                continue
+            seen_part_ids.add(part_id)
 
-            save_part(conn, {
-                "part_id": part_id,
-                "name": name,
-                "description": str(row.get("description", "")).strip(),
-                "unit": str(row.get("unit", "Nos")).strip() or "Nos",
-                "quantity": int(row.get("quantity", 0) or 0),
-                "location": str(row.get("location", "")).strip(),
-                "min_level": int(row.get("min_level", 0) or 0),
-                "reorder_qty": int(row.get("reorder_qty", 0) or 0),
-                "active": int(row.get("active", 1) or 1),
-            })
+            existing = get_part(conn, part_id)
 
-            # Count correctly based on prior existence
-            if existed_before:
-                updated += 1
+            if existing is None:
+                save_part(conn, payload)
+                summary["inserted"] += 1
+            elif _part_matches_payload(existing, payload):
+                summary["unchanged"] += 1
             else:
-                inserted += 1
-        except Exception:
-            errors += 1
+                save_part(conn, payload)
+                summary["updated"] += 1
+
+        except Exception as exc:
+            summary["invalid_rows"] += 1
+            summary["messages"].append(f"Row {row_number}: {exc}")
+
     sync_parts_snapshot_csv(conn)
-    return inserted, updated, errors
+    return summary
