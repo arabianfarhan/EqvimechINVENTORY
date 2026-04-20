@@ -789,7 +789,7 @@ def _part_matches_payload(existing, payload):
         and int(existing["min_level"] or 0) == payload["min_level"]
         and int(existing["reorder_qty"] or 0) == payload["reorder_qty"]
         and int(existing["active"] or 0) == payload["active"]
-        and str(existing.get("category", "") or "").strip() == payload.get("category", "").strip()
+        and (lambda e, p: (str(e["category"] or "").strip() if (hasattr(e, 'keys') and "category" in e.keys()) else "") == p.get("category", "").strip())(existing, payload)
     )
 
 

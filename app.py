@@ -1011,12 +1011,8 @@ def items_page(conn):
         "items_dialog_part_id",
         "items_browser",
         "Type item name, ID, description or location…",
-        "im_search",
-        "im_dialog_part_id",
-        "im_pick",
-        "Type item name, ID, description or location…",
         category_key="im_category",
-
+    )
 
 def pick_material_page(conn):
     # ── Success state: shown after a confirmed issue to prevent double-press ──
@@ -1171,11 +1167,13 @@ def item_master_page(conn):
                 disabled=current is not None,
             )
             name = st.text_input("Item name *", value="" if current is None else current["name"])
-            category = st.selectbox(
-                "Category",
-                ["Hardware", "Electronics", "Metals", "Others"],
-                index=(0 if current is None else (["Hardware", "Electronics", "Metals", "Others"].index(current.get("category") if current.get("category") in ["Hardware", "Electronics", "Metals", "Others"] else "Others"))),
-            )
+            category_options = ["Hardware", "Electronics", "Metals", "Others"]
+            initial_cat = "Others" if current is None else safe_part_field(current, "category", "Others")
+            try:
+                idx = category_options.index(initial_cat) if initial_cat in category_options else category_options.index("Others")
+            except Exception:
+                idx = 3
+            category = st.selectbox("Category", category_options, index=idx)
             unit = st.text_input("Unit", value="Nos" if current is None else current["unit"])
             location = st.text_input("Location", value="" if current is None else current["location"])
         with col2:
