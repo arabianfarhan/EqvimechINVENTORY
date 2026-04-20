@@ -705,6 +705,8 @@ def show_pick_dialog(conn):
                     "unit": part["unit"],
                     "returnable": returnable,
                 }
+                # ensure animation runs once when pick is completed
+                st.session_state["pick_animation_shown"] = False
                 st.session_state.pop("pick_dialog_part_id", None)
                 safe_rerun()
             except Exception as exc:
@@ -715,7 +717,7 @@ def show_pick_dialog(conn):
         safe_rerun()
 
 
-@st.dialog("Deposit Stock", width="large", dismissible=False)
+@st.dialog("Inward Stock", width="large", dismissible=False)
 def show_deposit_dialog(conn):
     part_id = st.session_state.get("deposit_dialog_part_id")
     part = get_part(conn, part_id) if part_id else None
@@ -752,7 +754,7 @@ def show_deposit_dialog(conn):
         key=f"deposit_note_{part_id}",
     )
     action_col, close_col = st.columns(2)
-    if action_col.button("📥  Confirm Deposit", key=f"confirm_deposit_{part_id}", type="primary"):
+    if action_col.button("📥  Confirm Inward", key=f"confirm_deposit_{part_id}", type="primary"):
         if not note.strip():
             st.error("Note / GRN reference is required.")
         else:
@@ -965,7 +967,10 @@ def pick_material_page(conn):
     # ── Success state: shown after a confirmed issue to prevent double-press ──
     done = st.session_state.get("pick_done")
     if done:
-        st.balloons()
+        # show the celebration animation only once per completed pick
+        if not st.session_state.get("pick_animation_shown"):
+            st.balloons()
+            st.session_state["pick_animation_shown"] = True
         st.markdown(
             f"""
             <div style="background:#dcfce7;border:2px solid #16a34a;border-radius:12px;
@@ -987,6 +992,7 @@ def pick_material_page(conn):
         if st.button("← Issue another item", key="pick_another", type="secondary"):
             st.session_state.pop("pick_done", None)
             st.session_state.pop("pick_selected_id", None)
+            st.session_state.pop("pick_animation_shown", None)
             safe_rerun()
         return
 
