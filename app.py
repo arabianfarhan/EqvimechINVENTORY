@@ -516,11 +516,12 @@ def filter_parts(parts, query):
 
 
 def part_list_label(part):
-    desc = (part["description"] or "").strip()
+    desc = (part.get("description") or "").strip()
     if len(desc) > 54:
         desc = desc[:51] + "..."
-    base = f"{part['name']} | {part['part_id']}"
-    return f"{base}\n{desc}" if desc else base
+    if desc:
+        return f"{part['name']} | {desc}"
+    return part['name']
 
 
 def render_part_picker(parts, search_key, dialog_key, button_prefix, placeholder):
