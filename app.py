@@ -145,9 +145,22 @@ def blank_master_table_row():
     }
 
 
+def _master_table_signature_from_dataframe(dataframe):
+    normalized = dataframe.fillna("")
+    return tuple(tuple(row) for row in normalized[MASTER_TABLE_COLUMNS].itertuples(index=False, name=None))
+
+
+def sync_master_table_draft_from_db(conn, force=False):
+    fresh_df = build_master_table_dataframe(conn)
+    fresh_signature = _master_table_signature_from_dataframe(fresh_df)
+    if force or st.session_state.get("im_master_db_signature") != fresh_signature:
+        st.session_state["im_master_table_df"] = fresh_df
+        st.session_state["im_master_db_signature"] = fresh_signature
+        st.session_state.pop("im_master_editor", None)
+
+
 def reset_master_table_draft(conn):
-    st.session_state["im_master_table_df"] = build_master_table_dataframe(conn)
-    st.session_state.pop("im_master_editor", None)
+    sync_master_table_draft_from_db(conn, force=True)
 
 
 def style_import_preview_dataframe(dataframe):
@@ -1269,25 +1282,18 @@ def deposit_stock_page(conn):
 
 
 def item_master_page(conn):
-    if "im_master_table_df" not in st.session_state:
-        reset_master_table_draft(conn)
-
-    if st.session_state.pop("im_master_refresh_requested", False):
-        reset_master_table_draft(conn)
+    sync_master_table_draft_from_db(conn)
 
     save_notice = st.session_state.pop("im_master_save_notice", None)
     if save_notice:
         st.success(save_notice)
 
-    top_left, top_mid, top_right = st.columns([0.24, 0.24, 0.52])
+    top_left, top_right = st.columns([0.28, 0.72])
     if top_left.button("Add blank row", key="im_add_row", type="secondary"):
         draft_df = st.session_state.get("im_master_table_df", build_master_table_dataframe(conn)).copy()
         draft_df = pd.concat([draft_df, pd.DataFrame([blank_master_table_row()])], ignore_index=True)
         st.session_state["im_master_table_df"] = draft_df[MASTER_TABLE_COLUMNS]
         st.session_state.pop("im_master_editor", None)
-        safe_rerun()
-    if top_mid.button("Refresh from DB", key="im_refresh_table", type="secondary"):
-        st.session_state["im_master_refresh_requested"] = True
         safe_rerun()
     if top_right.button("Auto-classify categories", key="im_autoclass", type="secondary"):
         try:
@@ -1297,7 +1303,7 @@ def item_master_page(conn):
         except Exception as exc:
             st.error(str(exc))
 
-    st.caption("Edit any item directly in the table below.")
+    st.caption("Edit any item directly in the table below. The table now syncs from the database automatically whenever data changes.")
 
     draft_df = st.session_state.get("im_master_table_df", build_master_table_dataframe(conn))
     edited_df = st.data_editor(
@@ -1325,6 +1331,9 @@ def item_master_page(conn):
     )
     st.session_state["im_master_table_df"] = edited_df[MASTER_TABLE_COLUMNS]
 
+    if st.session_state.pop("im_clear_master_password", False):
+        st.session_state.pop("im_master_password", None)
+
     save_col, password_col = st.columns([0.26, 0.74])
     save_clicked = save_col.button("Save table", key="im_save_table", type="primary")
     master_password = password_col.text_input(
@@ -1341,7 +1350,7 @@ def item_master_page(conn):
             try:
                 result = save_master_table(conn, edited_df.to_dict("records"))
                 reset_master_table_draft(conn)
-                st.session_state["im_master_password"] = ""
+                st.session_state["im_clear_master_password"] = True
                 st.session_state["im_master_save_notice"] = (
                     f"Master table saved. {result['updated']} row(s) updated, {result['inserted']} row(s) added."
                 )
