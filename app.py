@@ -760,7 +760,7 @@ def show_deposit_dialog(conn):
     )
 
     qty = st.number_input(
-        "Quantity to deposit",
+        "Quantity to Inward",
         min_value=1,
         value=1,
         step=1,
@@ -1288,7 +1288,7 @@ def dashboard_page(conn):
             </div>
             <div class="metric-card mc-deposit">
                 <div class="metric-icon">📥</div>
-                <div class="metric-label">Deposited Today</div>
+                <div class="metric-label">Inwarded Today</div>
                 <div class="metric-value m-deposit">{metrics['deposits_today']}</div>
             </div>
         </div>
@@ -1325,7 +1325,13 @@ def dashboard_page(conn):
 
 def history_page(conn):
     fc1, fc2 = st.columns(2)
-    tx_type = fc1.selectbox("Type", ["all", "issue", "deposit", "return"], key="hist_type")
+    hist_options = ["all", "issue", "deposit", "return"]
+    tx_type = fc1.selectbox(
+        "Type",
+        hist_options,
+        format_func=lambda x: {"all": "All", "issue": "Issue", "deposit": "Inward", "return": "Return"}.get(x, x),
+        key="hist_type",
+    )
     with fc2:
         search = live_search_input("Search", "Item, serial no, user…", "hist_search")
 
@@ -1433,7 +1439,7 @@ def main():
 
     # tab navigation
     if role == "manager":
-        tab_labels = ["📦 Items", "⬆ Pick", "📥 Deposit", "↩ Returnables", "🗂 Master", "📊 Dashboard", "📋 History", "🔔 Alerts"]
+        tab_labels = ["📦 Items", "⬆ Pick", "📥 Inward", "↩ Returnables", "🗂 Master", "📊 Dashboard", "📋 History", "🔔 Alerts"]
         tabs = st.tabs(tab_labels)
         tab_items, tab_pick, tab_deposit, tab_returnables, tab_im, tab_dash, tab_hist, tab_alert = tabs
 
