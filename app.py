@@ -516,12 +516,32 @@ def filter_parts(parts, query):
 
 
 def part_list_label(part):
-    desc = (part.get("description") or "").strip()
+    # support multiple row types: dict, sqlite3.Row (mapping), or sequence/tuple
+    def _get(key, idx_fallback):
+        # dict-like with .get
+        try:
+            if hasattr(part, "get"):
+                return part.get(key)
+        except Exception:
+            pass
+        # mapping access like sqlite3.Row
+        try:
+            return part[key]
+        except Exception:
+            pass
+        # sequence fallback by index
+        try:
+            return part[idx_fallback]
+        except Exception:
+            return None
+
+    name = _get("name", 2) or str(_get("part_id", 1) or "")
+    desc = (_get("description", 3) or "").strip()
     if len(desc) > 54:
         desc = desc[:51] + "..."
     if desc:
-        return f"{part['name']} | {desc}"
-    return part['name']
+        return f"{name} | {desc}"
+    return name
 
 
 def render_part_picker(parts, search_key, dialog_key, button_prefix, placeholder):
