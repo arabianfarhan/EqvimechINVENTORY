@@ -30,9 +30,6 @@ from db import (
     sync_parts_snapshot_csv,
 )
 
-# URL for the live snapshot in the repo (raw content)
-REPO_ITEMS_SNAPSHOT_RAW_URL = "https://raw.githubusercontent.com/arabianfarhan/EqvimechINVENTORY/main/items_master_live.csv"
-
 st.set_page_config(
     page_title="Eqvimech Inventory",
     page_icon="🏭",
@@ -1042,24 +1039,6 @@ def item_master_page(conn):
                 safe_rerun()
             except Exception as exc:
                 st.error(f"Import failed: {exc}")
-
-        # Quick-reload from the repo snapshot (helpful for deployed instance recovery)
-        if st.button("↻ Reload items from repository snapshot", key="im_reload_repo"):
-            try:
-                repo_df = pd.read_csv(REPO_ITEMS_SNAPSHOT_RAW_URL, dtype=str).fillna("")
-                repo_records = repo_df.to_dict("records")
-                ins, upd, err = import_parts_from_csv(conn, repo_records)
-                msg = []
-                if ins:
-                    msg.append(f"{ins} inserted")
-                if upd:
-                    msg.append(f"{upd} updated")
-                if err:
-                    msg.append(f"{err} errors")
-                st.success("Reload complete: " + (", ".join(msg) if msg else "no changes"))
-                safe_rerun()
-            except Exception as exc:
-                st.error(f"Reload from repo failed: {exc}")
 
 
 def dashboard_page(conn):
