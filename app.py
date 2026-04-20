@@ -1663,16 +1663,14 @@ def main():
         with tab_alert:
             alerts_page(conn)
     else:
-        tab_labels = ["📦 Items", "⬆ Pick", "↩ Returnables", "📋 History", "🔔 Alerts"]
+        tab_labels = ["📦 Items", "⬆ Pick", "📋 History", "🔔 Alerts"]
         tabs = st.tabs(tab_labels)
-        tab_items, tab_pick, tab_returnables, tab_hist, tab_alert = tabs
+        tab_items, tab_pick, tab_hist, tab_alert = tabs
 
         with tab_items:
             items_page(conn)
         with tab_pick:
             pick_material_page(conn)
-        with tab_returnables:
-            returnables_page(conn)
         with tab_hist:
             history_page(conn)
         with tab_alert:
