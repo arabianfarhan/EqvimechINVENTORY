@@ -1,4 +1,5 @@
 import csv
+import difflib
 import os
 import sqlite3
 
@@ -189,7 +190,7 @@ def load_parts_from_snapshot_csv(csv_path=ITEMS_SNAPSHOT_CSV_PATH):
         reader = csv.DictReader(csvfile)
         return [
             row for row in reader
-            if str(row.get("part_id", "")).strip() and str(row.get("name", "")).strip()
+            if str(row.get("item_code", row.get("part_id", ""))).strip() and str(row.get("name", "")).strip()
         ]
 
 
@@ -249,14 +250,26 @@ def sync_parts_snapshot_csv(conn, active_only=False):
     rows = c.execute(sql, params).fetchall()
 
     fieldnames = [
-        "part_id", "name", "description", "unit", "quantity",
+        "item_code", "name", "description", "unit", "quantity",
         "location", "min_level", "reorder_qty", "active",
     ]
     with open(ITEMS_SNAPSHOT_CSV_PATH, "w", newline="", encoding="utf-8") as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
-            writer.writerow(dict(row))
+            writer.writerow(
+                {
+                    "item_code": row["part_id"],
+                    "name": row["name"],
+                    "description": row["description"],
+                    "unit": row["unit"],
+                    "quantity": row["quantity"],
+                    "location": row["location"],
+                    "min_level": row["min_level"],
+                    "reorder_qty": row["reorder_qty"],
+                    "active": row["active"],
+                }
+            )
 
 
 def save_part(conn, part_data):
@@ -607,8 +620,9 @@ def rows_to_dicts(rows):
 
 
 def _normalize_part_payload(row):
+    part_key = str(row.get("item_code", row.get("part_id", ""))).strip()
     return {
-        "part_id": str(row.get("part_id", "")).strip(),
+        "part_id": part_key,
         "name": str(row.get("name", "")).strip(),
         "description": str(row.get("description", "")).strip(),
         "unit": str(row.get("unit", "Nos")).strip() or "Nos",
@@ -618,6 +632,74 @@ def _normalize_part_payload(row):
         "reorder_qty": int(row.get("reorder_qty", 0) or 0),
         "active": int(row.get("active", 1) or 1),
     }
+
+
+def _payload_from_existing_row(row):
+    return {
+        "part_id": str(row["part_id"] or "").strip(),
+        "name": str(row["name"] or "").strip(),
+        "description": str(row["description"] or "").strip(),
+        "unit": str(row["unit"] or "Nos").strip() or "Nos",
+        "quantity": int(row["quantity"] or 0),
+        "location": str(row["location"] or "").strip(),
+        "min_level": int(row["min_level"] or 0),
+        "reorder_qty": int(row["reorder_qty"] or 0),
+        "active": int(row["active"] or 0),
+    }
+
+
+def _normalize_compare_text(value):
+    cleaned = []
+    for char in str(value or "").lower():
+        cleaned.append(char if char.isalnum() else " ")
+    return " ".join("".join(cleaned).split())
+
+
+def _near_duplicate_reason(payload, candidate):
+    if payload["part_id"] == candidate["part_id"]:
+        return None
+
+    payload_name = _normalize_compare_text(payload["name"])
+    candidate_name = _normalize_compare_text(candidate["name"])
+    payload_desc = _normalize_compare_text(payload["description"])
+    candidate_desc = _normalize_compare_text(candidate["description"])
+    payload_combo = " ".join(part for part in [payload_name, payload_desc] if part).strip()
+    candidate_combo = " ".join(part for part in [candidate_name, candidate_desc] if part).strip()
+
+    same_unit = payload["unit"] == candidate["unit"]
+
+    if payload_name and payload_name == candidate_name and payload_desc and payload_desc == candidate_desc:
+        return "Same name and specification"
+    if payload_name and payload_name == candidate_name and same_unit:
+        return "Same name"
+    if payload_desc and payload_desc == candidate_desc and same_unit:
+        return "Same specification"
+
+    name_ratio = difflib.SequenceMatcher(None, payload_name, candidate_name).ratio() if payload_name and candidate_name else 0
+    desc_ratio = difflib.SequenceMatcher(None, payload_desc, candidate_desc).ratio() if payload_desc and candidate_desc else 0
+    combo_ratio = difflib.SequenceMatcher(None, payload_combo, candidate_combo).ratio() if payload_combo and candidate_combo else 0
+
+    if same_unit and name_ratio >= 0.96 and desc_ratio >= 0.88:
+        return "Very similar name and specification"
+    if same_unit and combo_ratio >= 0.94 and len(payload_combo) >= 10 and len(candidate_combo) >= 10:
+        return "Very similar item details"
+
+    return None
+
+
+def _find_near_duplicate_matches(payload, existing_payloads, uploaded_payloads):
+    matches = []
+    seen_codes = set()
+    for candidate in [*existing_payloads, *uploaded_payloads]:
+        reason = _near_duplicate_reason(payload, candidate)
+        candidate_code = candidate["part_id"]
+        if not reason or candidate_code in seen_codes:
+            continue
+        seen_codes.add(candidate_code)
+        matches.append(f"{reason} as {candidate_code} ({candidate['name']})")
+        if len(matches) >= 3:
+            break
+    return matches
 
 
 def _part_matches_payload(existing, payload):
@@ -667,6 +749,7 @@ def analyze_parts_import(conn, records):
         "updated": 0,
         "unchanged": 0,
         "duplicate_rows": 0,
+        "near_duplicate_rows": 0,
         "invalid_rows": 0,
         "messages": [],
         "rows": [],
@@ -674,12 +757,20 @@ def analyze_parts_import(conn, records):
         "total_rows": len(records),
     }
     seen_part_ids = set()
+    existing_payloads = [
+        _payload_from_existing_row(row)
+        for row in conn.execute(
+            "SELECT part_id, name, description, unit, quantity, location, min_level, reorder_qty, active FROM parts"
+        ).fetchall()
+    ]
+    uploaded_payloads = []
 
     for row_number, row in enumerate(records, start=2):
         entry = {
             "row_number": row_number,
             "action": "invalid",
             "note": "",
+            "duplicate_alert": "",
             "payload": None,
         }
         try:
@@ -714,6 +805,16 @@ def analyze_parts_import(conn, records):
                     analysis["updated"] += 1
                     entry["action"] = "update"
                     entry["note"] = "Will update: " + ", ".join(changed_fields)
+
+                if entry["action"] in {"insert", "update", "unchanged"}:
+                    matches = _find_near_duplicate_matches(payload, existing_payloads, uploaded_payloads)
+                    if matches:
+                        analysis["near_duplicate_rows"] += 1
+                        entry["duplicate_alert"] = "; ".join(matches)
+                        analysis["messages"].append(
+                            f"Row {row_number}: possible duplicate - {entry['duplicate_alert']}"
+                        )
+                    uploaded_payloads.append(payload)
         except Exception as exc:
             analysis["invalid_rows"] += 1
             entry["note"] = str(exc)
@@ -730,7 +831,7 @@ def analyze_parts_import(conn, records):
 def import_parts_from_csv(conn, records):
     """
     Upsert parts from a list of dicts (from CSV import).
-    Required keys: part_id, name.
+    Required keys: item_code/name or legacy part_id/name.
     Optional: description, unit, quantity, location, min_level, reorder_qty, active.
     Returns a summary dict with inserted/updated/unchanged/duplicate_rows/invalid_rows counts.
     """

@@ -65,17 +65,36 @@ def clear_import_review_state(reset_uploader=False):
         st.session_state["im_upload_nonce"] = st.session_state.get("im_upload_nonce", 0) + 1
 
 
-def format_import_summary(summary):
+def format_import_summary(summary, prefix="Import complete"):
     parts = [
         f"{summary['inserted']} new",
         f"{summary['updated']} updated",
         f"{summary['unchanged']} unchanged",
     ]
+    if summary.get("near_duplicate_rows"):
+        parts.append(f"{summary['near_duplicate_rows']} possible duplicate(s) to review")
     if summary["duplicate_rows"]:
         parts.append(f"{summary['duplicate_rows']} duplicate row(s) skipped")
     if summary["invalid_rows"]:
         parts.append(f"{summary['invalid_rows']} invalid row(s)")
-    return "Import complete: " + ", ".join(parts) + "."
+    return prefix + ": " + ", ".join(parts) + "."
+
+
+def style_import_preview_dataframe(dataframe):
+    def style_row(row):
+        review_status = row.get("review_status", "")
+        duplicate_alert = row.get("possible_duplicate", "")
+        if review_status in {"Invalid", "Duplicate in CSV"}:
+            return ["background-color: #fef2f2"] * len(row)
+        if duplicate_alert:
+            return ["background-color: #fffbeb"] * len(row)
+        if review_status == "New":
+            return ["background-color: #f0fdf4"] * len(row)
+        if review_status == "Update":
+            return ["background-color: #eff6ff"] * len(row)
+        return [""] * len(row)
+
+    return dataframe.style.apply(style_row, axis=1)
 
 
 def import_preview_dataframe(preview):
@@ -94,7 +113,8 @@ def import_preview_dataframe(preview):
                 "csv_row": entry["row_number"],
                 "review_status": action_labels.get(entry["action"], entry["action"]),
                 "review_note": entry.get("note", ""),
-                "part_id": payload.get("part_id", ""),
+                "possible_duplicate": entry.get("duplicate_alert", ""),
+                "item_code": payload.get("part_id", ""),
                 "name": payload.get("name", ""),
                 "description": payload.get("description", ""),
                 "unit": payload.get("unit", ""),
@@ -804,8 +824,10 @@ def show_import_review_dialog(conn):
         f"Review all uploaded rows before import. Nothing will be saved until you click Confirm Import."
     )
 
-    summary_text = format_import_summary(preview)
-    if preview["can_import"]:
+    summary_text = format_import_summary(preview, prefix="Review summary")
+    if preview["can_import"] and preview.get("near_duplicate_rows"):
+        st.warning(summary_text + " Possible duplicates are highlighted in yellow for manual review.")
+    elif preview["can_import"]:
         st.info(summary_text)
     else:
         st.error(
@@ -814,7 +836,7 @@ def show_import_review_dialog(conn):
 
     preview_df = import_preview_dataframe(preview)
     if not preview_df.empty:
-        st.dataframe(preview_df, use_container_width=True, hide_index=True, height=380)
+        st.dataframe(style_import_preview_dataframe(preview_df), use_container_width=True, hide_index=True, height=380)
 
     if preview["messages"]:
         st.caption("Validation notes")
@@ -1000,7 +1022,7 @@ def item_master_page(conn):
         current_id = st.session_state.get("im_selected_id")
         current = get_part(conn, current_id) if current_id else None
         if current:
-            st.caption(f"Editing: {current['name']} ({current['part_id']})")
+            st.caption(f"Editing: {current['name']} (code: {current['part_id']})")
         else:
             st.caption("Creating a new item")
 
@@ -1028,7 +1050,7 @@ def item_master_page(conn):
         col1, col2 = st.columns(2)
         with col1:
             part_id = st.text_input(
-                "Item ID *",
+                "Item Code *",
                 value="" if current is None else current["part_id"],
                 disabled=current is not None,
             )
@@ -1060,7 +1082,7 @@ def item_master_page(conn):
         if st.form_submit_button("💾  Save Item"):
             pid = current["part_id"] if current else part_id.strip()
             if not pid:
-                st.error("Item ID is required.")
+                st.error("Item Code is required.")
             elif not name.strip():
                 st.error("Item name is required.")
             else:
@@ -1111,8 +1133,9 @@ def item_master_page(conn):
         all_parts = get_parts(conn, active_only=False)
         if all_parts:
             exp_df = pd.DataFrame(rows_to_dicts(all_parts)).drop(
-                columns=["created_at", "updated_at"], errors="ignore"
+                columns=["id", "created_at", "updated_at"], errors="ignore"
             )
+            exp_df = exp_df.rename(columns={"part_id": "item_code"})
             st.download_button(
                 "⬇ Export all items",
                 exp_df.to_csv(index=False).encode("utf-8"),
@@ -1130,7 +1153,7 @@ def item_master_page(conn):
         import_result = st.session_state.pop("im_import_result", None)
         if import_result is not None:
             result_text = format_import_summary(import_result)
-            if import_result["duplicate_rows"] or import_result["invalid_rows"]:
+            if import_result["duplicate_rows"] or import_result["invalid_rows"] or import_result.get("near_duplicate_rows"):
                 preview_text = "; ".join(import_result["messages"][:3])
                 st.warning(f"{result_text} {preview_text}".strip())
             else:

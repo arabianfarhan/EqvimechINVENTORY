@@ -1,4 +1,4 @@
-part_id,name,description,unit,quantity,location,min_level,reorder_qty,active
+item_code,name,description,unit,quantity,location,min_level,reorder_qty,active
 NUT-R32,Ballscrew Nut R32,Flanged nut for R32 ballscrew | Make: Hiwin | Single nut,Nos,15,Bin B1,5,10,1
 NUT-R40,Ballscrew Nut R40,Flanged nut for R40 ballscrew | Make: Hiwin | Single nut,Nos,12,Bin B1,5,10,1
 BS-R25-890,Ballscrew R25,Ballscrew R25-5-890 | Make: Hiwin | Dia: 25mm | Lead: 5mm | Length: 890mm,Nos,10,Rack A - Shelf 1,3,5,1

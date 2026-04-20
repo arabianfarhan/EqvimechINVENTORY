@@ -1,4 +1,4 @@
-part_id,name,description,unit,quantity,location,min_level,reorder_qty,active
+item_code,name,description,unit,quantity,location,min_level,reorder_qty,active
 BS-R25-890,Ballscrew R25,Ballscrew R25-5-890 | Make: Hiwin | Dia: 25mm | Lead: 5mm | Length: 890mm,Nos,10,Rack A - Shelf 1,3,5,1
 BS-R32-1000,Ballscrew R32,Ballscrew R32-5-1000 | Make: Hiwin | Dia: 32mm | Lead: 5mm | Length: 1000mm,Nos,8,Rack A - Shelf 1,2,4,1
 BS-R40-1200,Ballscrew R40,Ballscrew R40-10-1200 | Make: Hiwin | Dia: 40mm | Lead: 10mm | Length: 1200mm,Nos,5,Rack A - Shelf 2,2,3,1
