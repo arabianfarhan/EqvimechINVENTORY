@@ -570,7 +570,7 @@ def sidebar_identity(conn):
     with st.sidebar:
         if "role" not in st.session_state:
             st.session_state["role"] = "user"
-        render_brand_logo(width=190)
+        render_brand_logo(width=76)
         st.markdown("---")
 
         current_role = st.session_state.get("role", "user")
@@ -990,6 +990,13 @@ def show_deposit_dialog(conn):
 
 @st.dialog("Return Material", width="large", dismissible=False)
 def show_return_dialog(conn):
+    if st.session_state.get("role", "user") != "manager":
+        st.error("Only managers can return material.")
+        if st.button("Close", key="close_return_manager_only", type="secondary"):
+            st.session_state.pop("return_dialog_issue_id", None)
+            safe_rerun()
+        return
+
     issue_tx_id = st.session_state.get("return_dialog_issue_id")
     issue = None
     if issue_tx_id:
@@ -1290,7 +1297,7 @@ def item_master_page(conn):
         except Exception as exc:
             st.error(str(exc))
 
-    st.caption("Edit any item directly in the table below. Save is allowed only with password 7089.")
+    st.caption("Edit any item directly in the table below.")
 
     draft_df = st.session_state.get("im_master_table_df", build_master_table_dataframe(conn))
     edited_df = st.data_editor(
@@ -1323,7 +1330,7 @@ def item_master_page(conn):
     master_password = password_col.text_input(
         "Save password",
         type="password",
-        placeholder="Enter 7089 to save all edits",
+        placeholder="Enter password to save edits",
         key="im_master_password",
     )
 
@@ -1603,7 +1610,7 @@ def main():
     # header row
     brand_col, title_col = st.columns([0.18, 0.82])
     with brand_col:
-        render_brand_logo(width=120)
+        render_brand_logo(width=48)
     with title_col:
         st.markdown(
             """
