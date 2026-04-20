@@ -1,8 +1,16 @@
 import csv
+import os
 import sqlite3
 
 DB_PATH = "inventory.db"
 ITEMS_SNAPSHOT_CSV_PATH = "items_master_live.csv"
+DEFAULT_SAMPLE_PART_IDS = {
+    "Ballscrew-R25",
+    "NutR32",
+    "Ballscrew-R32",
+    "Ballscrew-R40",
+    "Ballscrew-R50",
+}
 
 
 def get_conn():
@@ -171,6 +179,42 @@ def seed_sample_data(conn):
             parts,
         )
         conn.commit()
+
+
+def load_parts_from_snapshot_csv(csv_path=ITEMS_SNAPSHOT_CSV_PATH):
+    if not os.path.exists(csv_path):
+        return []
+
+    with open(csv_path, newline="", encoding="utf-8") as csvfile:
+        reader = csv.DictReader(csvfile)
+        return [
+            row for row in reader
+            if str(row.get("part_id", "")).strip() and str(row.get("name", "")).strip()
+        ]
+
+
+def bootstrap_parts_catalog(conn, csv_path=ITEMS_SNAPSHOT_CSV_PATH):
+    c = conn.cursor()
+    current_part_ids = [row[0] for row in c.execute("SELECT part_id FROM parts").fetchall()]
+    current_count = len(current_part_ids)
+
+    snapshot_records = load_parts_from_snapshot_csv(csv_path)
+    snapshot_count = len(snapshot_records)
+    is_seed_only = (
+        current_count == 0
+        or (
+            current_count <= len(DEFAULT_SAMPLE_PART_IDS)
+            and set(current_part_ids).issubset(DEFAULT_SAMPLE_PART_IDS)
+        )
+    )
+
+    if snapshot_records and is_seed_only and snapshot_count > current_count:
+        return import_parts_from_csv(conn, snapshot_records)
+
+    if current_count == 0:
+        seed_sample_data(conn)
+
+    return 0, 0, 0
 
 
 def get_parts(conn, query="", active_only=True):

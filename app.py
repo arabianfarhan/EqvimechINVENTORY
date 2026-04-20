@@ -6,6 +6,7 @@ import streamlit as st
 from st_keyup import st_keyup
 
 from db import (
+    bootstrap_parts_catalog,
     delete_part,
     deposit_stock,
     get_conn,
@@ -24,7 +25,6 @@ from db import (
     return_issue_material,
     rows_to_dicts,
     save_part,
-    seed_sample_data,
     DB_PATH,
     ITEMS_SNAPSHOT_CSV_PATH,
     sync_parts_snapshot_csv,
@@ -1226,7 +1226,7 @@ def main():
     if os.path.exists(RESET_EMPTY_MARKER):
         os.remove(RESET_EMPTY_MARKER)
     else:
-        seed_sample_data(conn)
+        bootstrap_parts_catalog(conn)
     sync_parts_snapshot_csv(conn)
     sidebar_identity(conn)
 
