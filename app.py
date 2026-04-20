@@ -753,6 +753,7 @@ def show_deposit_dialog(conn):
                 {stock_pill(part['quantity'], part['min_level'])}
                 <span class="pill p-neutral">Location: {part['location']}</span>
                 <span class="pill p-neutral">Unit: {part['unit']}</span>
+                <span class="pill p-neutral">Category: {part.get('category', 'Others')}</span>
             </div>
         </div>
         """,
@@ -1129,6 +1130,11 @@ def item_master_page(conn):
                 disabled=current is not None,
             )
             name = st.text_input("Item name *", value="" if current is None else current["name"])
+            category = st.selectbox(
+                "Category",
+                ["Hardware", "Electronics", "Metals", "Others"],
+                index=(0 if current is None else (["Hardware", "Electronics", "Metals", "Others"].index(current.get("category") if current.get("category") in ["Hardware", "Electronics", "Metals", "Others"] else "Others"))),
+            )
             unit = st.text_input("Unit", value="Nos" if current is None else current["unit"])
             location = st.text_input("Location", value="" if current is None else current["location"])
         with col2:
@@ -1167,6 +1173,7 @@ def item_master_page(conn):
                         "name": name.strip(),
                         "description": description.strip(),
                         "unit": unit.strip() or "Nos",
+                        "category": category,
                         "quantity": int(quantity),
                         "location": location.strip(),
                         "min_level": int(min_level),

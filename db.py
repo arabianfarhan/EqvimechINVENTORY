@@ -75,6 +75,7 @@ def ensure_columns(conn):
         {
             "description": "TEXT DEFAULT ''",
             "unit": "TEXT DEFAULT 'Nos'",
+            "category": "TEXT DEFAULT 'Others'",
             "location": "TEXT DEFAULT ''",
             "min_level": "INTEGER DEFAULT 0",
             "reorder_qty": "INTEGER DEFAULT 0",
@@ -134,9 +135,10 @@ def seed_sample_data(conn):
                 "Shelf 1",
                 1,
                 5,
+                "Hardware",
                 1,
             ),
-            ("NutR32", "Nut R32", "R32-10T3-FSI | Make: Hiwin", "Nos", 1, "Shelf 1", 1, 5, 1),
+            ("NutR32", "Nut R32", "R32-10T3-FSI | Make: Hiwin", "Nos", 1, "Shelf 1", 1, 5, "Hardware", 1),
             (
                 "Ballscrew-R32",
                 "Ballscrew R32",
@@ -146,6 +148,7 @@ def seed_sample_data(conn):
                 "Shelf 2",
                 1,
                 5,
+                "Hardware",
                 1,
             ),
             (
@@ -157,6 +160,7 @@ def seed_sample_data(conn):
                 "Shelf 2",
                 2,
                 5,
+                "Hardware",
                 1,
             ),
             (
@@ -168,14 +172,15 @@ def seed_sample_data(conn):
                 "Shelf 3",
                 2,
                 5,
+                "Hardware",
                 1,
             ),
         ]
         c.executemany(
             """
             INSERT INTO parts (
-                part_id, name, description, unit, quantity, location, min_level, reorder_qty, active
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                part_id, name, description, unit, quantity, location, min_level, reorder_qty, category, active
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             parts,
         )
@@ -251,7 +256,7 @@ def sync_parts_snapshot_csv(conn, active_only=False):
 
     fieldnames = [
         "item_code", "name", "description", "unit", "quantity",
-        "location", "min_level", "reorder_qty", "active",
+        "location", "min_level", "reorder_qty", "category", "active",
     ]
     with open(ITEMS_SNAPSHOT_CSV_PATH, "w", newline="", encoding="utf-8") as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
@@ -267,6 +272,7 @@ def sync_parts_snapshot_csv(conn, active_only=False):
                     "location": row["location"],
                     "min_level": row["min_level"],
                     "reorder_qty": row["reorder_qty"],
+                    "category": row.get("category", "Others"),
                     "active": row["active"],
                 }
             )
@@ -280,7 +286,7 @@ def save_part(conn, part_data):
             """
             UPDATE parts
             SET name = ?, description = ?, unit = ?, quantity = ?, location = ?,
-                min_level = ?, reorder_qty = ?, active = ?, updated_at = CURRENT_TIMESTAMP
+                min_level = ?, reorder_qty = ?, category = ?, active = ?, updated_at = CURRENT_TIMESTAMP
             WHERE part_id = ?
             """,
             (
@@ -291,6 +297,7 @@ def save_part(conn, part_data):
                 part_data["location"],
                 part_data["min_level"],
                 part_data["reorder_qty"],
+                part_data.get("category", "Others"),
                 part_data["active"],
                 part_data["part_id"],
             ),
@@ -299,7 +306,7 @@ def save_part(conn, part_data):
         c.execute(
             """
             INSERT INTO parts (
-                part_id, name, description, unit, quantity, location, min_level, reorder_qty, active
+                part_id, name, description, unit, quantity, location, min_level, reorder_qty, category, active
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
@@ -311,6 +318,7 @@ def save_part(conn, part_data):
                 part_data["location"],
                 part_data["min_level"],
                 part_data["reorder_qty"],
+                part_data.get("category", "Others"),
                 part_data["active"],
             ),
         )
