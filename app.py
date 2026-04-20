@@ -1,4 +1,6 @@
 import os
+import subprocess
+import datetime as dt
 import pandas as pd
 import streamlit as st
 from st_keyup import st_keyup
@@ -289,6 +291,36 @@ def inject_theme():
         """,
         unsafe_allow_html=True,
     )
+
+
+def get_version_info():
+    """Return (short_hash, timestamp_str) for current repo or fallback to CSV mtime."""
+    short = ""
+    ts = None
+    try:
+        short = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=os.getcwd(), stderr=subprocess.DEVNULL).decode().strip()
+        ts = subprocess.check_output(["git", "show", "-s", "--format=%ci", "HEAD"], cwd=os.getcwd(), stderr=subprocess.DEVNULL).decode().strip()
+    except Exception:
+        try:
+            if os.path.exists(ITEMS_SNAPSHOT_CSV_PATH):
+                m = os.path.getmtime(ITEMS_SNAPSHOT_CSV_PATH)
+                ts = dt.datetime.fromtimestamp(m).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            ts = None
+    if not ts:
+        ts = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    return short, ts
+
+
+def render_version_stamp():
+    ver, ts = get_version_info()
+    label = f"v {ver} • {ts}" if ver else ts
+    html = (
+        f"<div style=\"position:fixed;right:12px;bottom:12px;opacity:0.3;z-index:9999;"
+        f"pointer-events:none;font-size:12px;color:#0f172a;background:transparent;" 
+        f"padding:4px 6px;border-radius:6px;\">{label}</div>"
+    )
+    st.markdown(html, unsafe_allow_html=True)
 
 
 def stock_pill(qty, min_level):
@@ -1249,6 +1281,11 @@ def main():
         with tab_alert:
             alerts_page(conn)
 
+    # render faint version/timestamp stamp so users can confirm deployed build
+    try:
+        render_version_stamp()
+    except Exception:
+        pass
 
 if __name__ == "__main__":
     main()
