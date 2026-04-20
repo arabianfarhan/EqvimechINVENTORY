@@ -24,6 +24,8 @@ from db import (
     save_part,
     seed_sample_data,
     DB_PATH,
+    ITEMS_SNAPSHOT_CSV_PATH,
+    sync_parts_snapshot_csv,
 )
 
 st.set_page_config(
@@ -378,6 +380,8 @@ def sidebar_identity(conn):
                         pass
                     if os.path.exists(DB_PATH):
                         os.remove(DB_PATH)
+                    if os.path.exists(ITEMS_SNAPSHOT_CSV_PATH):
+                        os.remove(ITEMS_SNAPSHOT_CSV_PATH)
 
                     # Clear session state to avoid stale selections and credentials.
                     for k in list(st.session_state.keys()):
@@ -1170,6 +1174,7 @@ def main():
         os.remove(RESET_EMPTY_MARKER)
     else:
         seed_sample_data(conn)
+    sync_parts_snapshot_csv(conn)
     sidebar_identity(conn)
 
     role = st.session_state.get("role", "user")

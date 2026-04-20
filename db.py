@@ -1,6 +1,8 @@
+import csv
 import sqlite3
 
 DB_PATH = "inventory.db"
+ITEMS_SNAPSHOT_CSV_PATH = "items_master_live.csv"
 
 
 def get_conn():
@@ -190,6 +192,29 @@ def get_part(conn, part_id):
     return c.execute("SELECT * FROM parts WHERE part_id = ?", (part_id,)).fetchone()
 
 
+def sync_parts_snapshot_csv(conn, active_only=False):
+    c = conn.cursor()
+    sql = (
+        "SELECT part_id, name, description, unit, quantity, location, min_level, reorder_qty, active "
+        "FROM parts"
+    )
+    params = []
+    if active_only:
+        sql += " WHERE active = 1"
+    sql += " ORDER BY name, part_id"
+    rows = c.execute(sql, params).fetchall()
+
+    fieldnames = [
+        "part_id", "name", "description", "unit", "quantity",
+        "location", "min_level", "reorder_qty", "active",
+    ]
+    with open(ITEMS_SNAPSHOT_CSV_PATH, "w", newline="", encoding="utf-8") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(dict(row))
+
+
 def save_part(conn, part_data):
     c = conn.cursor()
     existing = get_part(conn, part_data["part_id"])
@@ -233,6 +258,7 @@ def save_part(conn, part_data):
             ),
         )
     conn.commit()
+    sync_parts_snapshot_csv(conn)
 
 
 def pick_material(conn, part_id, machine_serials, performed_by, performed_role, purpose, note="", returnable=False):
@@ -282,6 +308,7 @@ def pick_material(conn, part_id, machine_serials, performed_by, performed_role, 
             (running_balance, part_id),
         )
         conn.commit()
+        sync_parts_snapshot_csv(conn)
         return running_balance
     except Exception:
         conn.rollback()
@@ -327,6 +354,7 @@ def deposit_stock(conn, part_id, qty, performed_by, performed_role, note=""):
             ),
         )
         conn.commit()
+        sync_parts_snapshot_csv(conn)
         return balance_stock
     except Exception:
         conn.rollback()
@@ -391,6 +419,7 @@ def return_issue_material(conn, issue_tx_id, performed_by, performed_role, note=
             (return_tx_id, issue_tx_id),
         )
         conn.commit()
+        sync_parts_snapshot_csv(conn)
         return balance_stock
     except Exception:
         conn.rollback()
@@ -525,6 +554,7 @@ def delete_part(conn, part_id):
         (part_id,),
     )
     conn.commit()
+    sync_parts_snapshot_csv(conn)
 
 
 def rows_to_dicts(rows):
@@ -570,4 +600,5 @@ def import_parts_from_csv(conn, records):
                 inserted += 1
         except Exception:
             errors += 1
+    sync_parts_snapshot_csv(conn)
     return inserted, updated, errors
