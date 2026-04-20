@@ -16,7 +16,11 @@ from db import (
     get_part,
     get_parts,
     get_top_consumed_items,
+    get_dashboard_metrics_with_category,
+    get_top_consumed_items_by_category,
+    get_machine_usage_by_category,
     import_parts_from_csv,
+    auto_classify_parts,
     init_db,
     list_open_returnable_issues,
     list_returned_returnable_issues,
@@ -579,9 +583,17 @@ def _show_arrow_animation_once(key_prefix="pick"):
     st.session_state[flag_key] = True
 
 
-def render_part_picker(parts, search_key, dialog_key, button_prefix, placeholder):
+def render_part_picker(parts, search_key, dialog_key, button_prefix, placeholder, category_key=None):
     search_term = live_search_input("Search item", placeholder, search_key)
     matches = filter_parts(parts, search_term)
+
+    # optional category filter
+    if category_key:
+        categories = sorted({safe_part_field(p, "category", "Others") for p in parts})
+        if categories:
+            sel = st.selectbox("Category", ["All"] + categories, key=category_key)
+            if sel and sel != "All":
+                matches = [p for p in matches if safe_part_field(p, "category", "Others") == sel]
 
     st.caption(f"Showing {len(matches)} of {len(parts)} items")
     with st.container(height=460, border=True):
@@ -589,13 +601,14 @@ def render_part_picker(parts, search_key, dialog_key, button_prefix, placeholder
             st.info("No items matched your search.")
         else:
             for p in matches:
+                pid = safe_part_field(p, "part_id", "")
                 if st.button(
                     part_list_label(p),
-                    key=f"{button_prefix}_{p['part_id']}",
+                    key=f"{button_prefix}_{pid}",
                     use_container_width=True,
                     type="secondary",
                 ):
-                    st.session_state[dialog_key] = p["part_id"]
+                    st.session_state[dialog_key] = pid
                     safe_rerun()
 
 
@@ -998,9 +1011,11 @@ def items_page(conn):
         "items_dialog_part_id",
         "items_browser",
         "Type item name, ID, description or location…",
-    )
-    if st.session_state.get("items_dialog_part_id"):
-        show_item_details_dialog(conn)
+        "im_search",
+        "im_dialog_part_id",
+        "im_pick",
+        "Type item name, ID, description or location…",
+        category_key="im_category",
 
 
 def pick_material_page(conn):
@@ -1046,6 +1061,7 @@ def pick_material_page(conn):
         "pick_dialog_part_id",
         "pick_browser",
         "Type item name, ID, description or location…",
+        category_key="pick_category",
     )
     if st.session_state.get("pick_dialog_part_id"):
         show_pick_dialog(conn)
@@ -1089,6 +1105,7 @@ def deposit_stock_page(conn):
         "deposit_dialog_part_id",
         "deposit_browser",
         "Type item name, ID, description or location…",
+        category_key="deposit_category",
     )
     if st.session_state.get("deposit_dialog_part_id"):
         show_deposit_dialog(conn)
@@ -1102,6 +1119,13 @@ def item_master_page(conn):
         st.session_state.pop("im_selected_id", None)
         st.session_state.pop("im_confirm_delete", None)
         safe_rerun()
+    if action_col.button("Auto-classify categories", key="im_autoclass", type="secondary"):
+        try:
+            preview = auto_classify_parts(conn, apply=False)
+            st.session_state["im_autoclass_preview"] = preview
+            safe_rerun()
+        except Exception as exc:
+            st.error(str(exc))
 
     search_term = live_search_input(
         "Search items for master edit",
@@ -1244,6 +1268,29 @@ def item_master_page(conn):
         else:
             st.info("No items to export yet.")
 
+    # show autoclass preview/apply controls if present
+    if st.session_state.get("im_autoclass_preview"):
+        preview = st.session_state.get("im_autoclass_preview")
+        changes = [c for c in preview["changes"] if c["current"] != c["suggested"]]
+        st.markdown("**Auto-classify preview**")
+        if not changes:
+            st.info("No suggested changes. Items already classified or matched Others.")
+        else:
+            df = pd.DataFrame(changes)
+            st.dataframe(df[["part_id", "name", "current", "suggested"]], use_container_width=True)
+            c1, c2 = st.columns([0.5, 0.5])
+            if c1.button("Apply suggested categories", key="im_autoclass_apply"):
+                try:
+                    result = auto_classify_parts(conn, apply=True)
+                    st.success(f"Applied {result['updated']} category updates")
+                    st.session_state.pop("im_autoclass_preview", None)
+                    safe_rerun()
+                except Exception as exc:
+                    st.error(str(exc))
+            if c2.button("Dismiss", key="im_autoclass_dismiss"):
+                st.session_state.pop("im_autoclass_preview", None)
+                safe_rerun()
+
     with col_imp:
         if "im_upload_nonce" not in st.session_state:
             st.session_state["im_upload_nonce"] = 0
@@ -1275,9 +1322,14 @@ def item_master_page(conn):
 
 
 def dashboard_page(conn):
-    metrics = get_dashboard_metrics(conn)
-    top_items = get_top_consumed_items(conn)
-    machine_usage = get_machine_usage(conn)
+    # optional category filter for dashboard
+    parts_all = get_parts(conn, active_only=False)
+    categories = sorted({safe_part_field(p, "category", "Others") for p in parts_all})
+    selected_category = st.selectbox("Category", ["All"] + categories, key="dash_category")
+
+    metrics = get_dashboard_metrics_with_category(conn, None if selected_category == "All" else selected_category)
+    top_items = get_top_consumed_items_by_category(conn, selected_category if selected_category != "All" else None)
+    machine_usage = get_machine_usage_by_category(conn, selected_category if selected_category != "All" else None)
     recent_rows = list_transactions(conn, limit=8)
 
     low_cls  = "mc-danger" if metrics["low_stock_items"] > 0 else ""

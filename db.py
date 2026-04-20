@@ -569,22 +569,42 @@ def list_returned_returnable_issues(conn, search="", performed_by=None, limit=20
 
 
 def get_dashboard_metrics(conn):
+    # default no category filter
+    return get_dashboard_metrics_with_category(conn, None)
+
+
+def get_dashboard_metrics_with_category(conn, category=None):
     c = conn.cursor()
+    parts_where = "WHERE active = 1"
+    parts_params = []
+    tx_where = ""
+    tx_params = []
+    if category and category != "All":
+        parts_where += " AND category = ?"
+        parts_params.append(category)
+        tx_where = " AND part_id IN (SELECT part_id FROM parts WHERE category = ?)"
+        tx_params.append(category)
+
+    total_items = c.execute(f"SELECT COUNT(*) FROM parts {parts_where}", parts_params).fetchone()[0]
+    total_stock_units = c.execute(f"SELECT COALESCE(SUM(quantity), 0) FROM parts {parts_where}", parts_params).fetchone()[0]
+    low_stock_items = c.execute(f"SELECT COUNT(*) FROM parts {parts_where} AND quantity <= min_level", parts_params).fetchone()[0]
+    out_of_stock_items = c.execute(f"SELECT COUNT(*) FROM parts {parts_where} AND quantity = 0", parts_params).fetchone()[0]
+    issues_today = c.execute(
+        f"SELECT COALESCE(SUM(qty), 0) FROM transactions WHERE tx_type = 'issue' AND DATE(created_at) = DATE('now') {tx_where}",
+        tx_params,
+    ).fetchone()[0]
+    deposits_today = c.execute(
+        f"SELECT COALESCE(SUM(qty), 0) FROM transactions WHERE tx_type = 'deposit' AND DATE(created_at) = DATE('now') {tx_where}",
+        tx_params,
+    ).fetchone()[0]
+
     return {
-        "total_items": c.execute("SELECT COUNT(*) FROM parts WHERE active = 1").fetchone()[0],
-        "total_stock_units": c.execute("SELECT COALESCE(SUM(quantity), 0) FROM parts WHERE active = 1").fetchone()[0],
-        "low_stock_items": c.execute(
-            "SELECT COUNT(*) FROM parts WHERE active = 1 AND quantity <= min_level"
-        ).fetchone()[0],
-        "out_of_stock_items": c.execute(
-            "SELECT COUNT(*) FROM parts WHERE active = 1 AND quantity = 0"
-        ).fetchone()[0],
-        "issues_today": c.execute(
-            "SELECT COALESCE(SUM(qty), 0) FROM transactions WHERE tx_type = 'issue' AND DATE(created_at) = DATE('now')"
-        ).fetchone()[0],
-        "deposits_today": c.execute(
-            "SELECT COALESCE(SUM(qty), 0) FROM transactions WHERE tx_type = 'deposit' AND DATE(created_at) = DATE('now')"
-        ).fetchone()[0],
+        "total_items": total_items,
+        "total_stock_units": total_stock_units,
+        "low_stock_items": low_stock_items,
+        "out_of_stock_items": out_of_stock_items,
+        "issues_today": issues_today,
+        "deposits_today": deposits_today,
     }
 
 
@@ -603,6 +623,24 @@ def get_top_consumed_items(conn, limit=5):
     ).fetchall()
 
 
+def get_top_consumed_items_by_category(conn, category=None, limit=5):
+    c = conn.cursor()
+    if not category or category == "All":
+        return get_top_consumed_items(conn, limit=limit)
+    return c.execute(
+        """
+        SELECT t.part_id, t.part_name, SUM(t.qty) AS issued_qty
+        FROM transactions t
+        JOIN parts p ON p.part_id = t.part_id
+        WHERE t.tx_type = 'issue' AND p.category = ?
+        GROUP BY t.part_id, t.part_name
+        ORDER BY issued_qty DESC, t.part_name ASC
+        LIMIT ?
+        """,
+        (category, limit),
+    ).fetchall()
+
+
 def get_machine_usage(conn, limit=10):
     c = conn.cursor()
     return c.execute(
@@ -615,6 +653,24 @@ def get_machine_usage(conn, limit=10):
         LIMIT ?
         """,
         (limit,),
+    ).fetchall()
+
+
+def get_machine_usage_by_category(conn, category=None, limit=10):
+    c = conn.cursor()
+    if not category or category == "All":
+        return get_machine_usage(conn, limit=limit)
+    return c.execute(
+        """
+        SELECT t.machine_sn, COUNT(*) AS issued_lines
+        FROM transactions t
+        JOIN parts p ON p.part_id = t.part_id
+        WHERE t.tx_type = 'issue' AND t.machine_sn <> '' AND p.category = ?
+        GROUP BY t.machine_sn
+        ORDER BY issued_lines DESC, t.machine_sn ASC
+        LIMIT ?
+        """,
+        (category, limit),
     ).fetchall()
 
 
@@ -646,6 +702,7 @@ def _normalize_part_payload(row):
         "min_level": int(row.get("min_level", 0) or 0),
         "reorder_qty": int(row.get("reorder_qty", 0) or 0),
         "active": int(row.get("active", 1) or 1),
+        "category": str(row.get("category", "Others")).strip() or "Others",
     }
 
 
@@ -660,6 +717,7 @@ def _payload_from_existing_row(row):
         "min_level": int(row["min_level"] or 0),
         "reorder_qty": int(row["reorder_qty"] or 0),
         "active": int(row["active"] or 0),
+        "category": str(row["category"] or "").strip() or "Others",
     }
 
 
@@ -731,6 +789,7 @@ def _part_matches_payload(existing, payload):
         and int(existing["min_level"] or 0) == payload["min_level"]
         and int(existing["reorder_qty"] or 0) == payload["reorder_qty"]
         and int(existing["active"] or 0) == payload["active"]
+        and str(existing.get("category", "") or "").strip() == payload.get("category", "").strip()
     )
 
 
@@ -740,6 +799,7 @@ def _diff_part_fields(existing, payload):
         "name": "name",
         "description": "description",
         "unit": "unit",
+        "category": "category",
         "quantity": "quantity",
         "location": "location",
         "min_level": "min level",
@@ -756,6 +816,101 @@ def _diff_part_fields(existing, payload):
         if old_value != new_value:
             changed.append(label)
     return changed
+
+
+# -----------------
+# Category helpers
+# -----------------
+CATEGORY_KEYWORDS = {
+    "Hardware": [
+        "screw",
+        "bolt",
+        "nut",
+        "washer",
+        "bracket",
+        "coupling",
+        "bearing",
+        "block",
+        "rail",
+        "pulley",
+        "pully",
+        "shaft",
+        "spindle",
+        "bracket",
+        "coupling",
+    ],
+    "Electronics": [
+        "servo",
+        "motor",
+        "controller",
+        "encoder",
+        "sensor",
+        "cable",
+        "wire",
+        "driver",
+        "pcb",
+        "resistor",
+        "capacitor",
+        "diode",
+    ],
+    "Metals": [
+        "steel",
+        "stainless",
+        "aluminium",
+        "aluminum",
+        "brass",
+        "copper",
+        "rod",
+        "bar",
+        "plate",
+        "sheet",
+    ],
+}
+
+
+def guess_category(text):
+    t = _normalize_compare_text(text or "")
+    scores = {k: 0 for k in CATEGORY_KEYWORDS}
+    for cat, keywords in CATEGORY_KEYWORDS.items():
+        for kw in keywords:
+            if kw and (kw in t):
+                scores[cat] += 1
+    # pick highest score, require at least one match
+    best = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))
+    if best and best[0][1] > 0:
+        return best[0][0]
+    return "Others"
+
+
+def auto_classify_parts(conn, apply=False):
+    """Suggest or apply category classification for existing parts.
+    If apply=True, updates the DB and returns the number updated and list of changes.
+    If apply=False, returns preview list of suggested changes without committing.
+    """
+    c = conn.cursor()
+    rows = c.execute("SELECT part_id, name, description, category FROM parts").fetchall()
+    suggestions = []
+    changed_count = 0
+    for row in rows:
+        part_id = row["part_id"]
+        name = row["name"]
+        desc = row["description"] or ""
+        current = (row["category"] or "").strip() or "Others"
+        suggested = guess_category(" ".join([name or "", desc or ""]))
+        suggestions.append({
+            "part_id": part_id,
+            "name": name,
+            "current": current,
+            "suggested": suggested,
+        })
+        if apply and suggested != current:
+            c.execute("UPDATE parts SET category = ?, updated_at = CURRENT_TIMESTAMP WHERE part_id = ?", (suggested, part_id))
+            changed_count += 1
+    if apply:
+        conn.commit()
+        if changed_count:
+            sync_parts_snapshot_csv(conn)
+    return {"changes": suggestions, "updated": changed_count}
 
 
 def analyze_parts_import(conn, records):
@@ -775,7 +930,7 @@ def analyze_parts_import(conn, records):
     existing_payloads = [
         _payload_from_existing_row(row)
         for row in conn.execute(
-            "SELECT part_id, name, description, unit, quantity, location, min_level, reorder_qty, active FROM parts"
+            "SELECT part_id, name, description, unit, quantity, location, min_level, reorder_qty, active, category FROM parts"
         ).fetchall()
     ]
     uploaded_payloads = []
