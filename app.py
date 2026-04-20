@@ -544,6 +544,23 @@ def part_list_label(part):
     return name
 
 
+def safe_part_field(part, key, default=""):
+    """Safely get a field from `part` which may be a dict, sqlite3.Row, or sequence."""
+    # dict-like with .get
+    try:
+        if hasattr(part, "get"):
+            return part.get(key, default)
+    except Exception:
+        pass
+    # mapping access like sqlite3.Row
+    try:
+        return part[key]
+    except Exception:
+        pass
+    # sequence fallback not used often; return default
+    return default
+
+
 def _show_arrow_animation_once(key_prefix="pick"):
     # key_prefix: 'pick' or 'deposit'
     flag_key = f"{key_prefix}_animation_shown"
@@ -753,7 +770,7 @@ def show_deposit_dialog(conn):
                 {stock_pill(part['quantity'], part['min_level'])}
                 <span class="pill p-neutral">Location: {part['location']}</span>
                 <span class="pill p-neutral">Unit: {part['unit']}</span>
-                <span class="pill p-neutral">Category: {part.get('category', 'Others')}</span>
+                <span class="pill p-neutral">Category: {safe_part_field(part, 'category', 'Others')}</span>
             </div>
         </div>
         """,
