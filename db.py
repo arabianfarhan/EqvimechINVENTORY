@@ -637,6 +637,96 @@ def _part_matches_payload(existing, payload):
     )
 
 
+def _diff_part_fields(existing, payload):
+    changed = []
+    field_labels = {
+        "name": "name",
+        "description": "description",
+        "unit": "unit",
+        "quantity": "quantity",
+        "location": "location",
+        "min_level": "min level",
+        "reorder_qty": "reorder qty",
+        "active": "active",
+    }
+    for field_name, label in field_labels.items():
+        old_value = existing[field_name]
+        new_value = payload[field_name]
+        if field_name in {"quantity", "min_level", "reorder_qty", "active"}:
+            old_value = int(old_value or 0)
+        else:
+            old_value = str(old_value or "").strip()
+        if old_value != new_value:
+            changed.append(label)
+    return changed
+
+
+def analyze_parts_import(conn, records):
+    analysis = {
+        "inserted": 0,
+        "updated": 0,
+        "unchanged": 0,
+        "duplicate_rows": 0,
+        "invalid_rows": 0,
+        "messages": [],
+        "rows": [],
+        "can_import": True,
+        "total_rows": len(records),
+    }
+    seen_part_ids = set()
+
+    for row_number, row in enumerate(records, start=2):
+        entry = {
+            "row_number": row_number,
+            "action": "invalid",
+            "note": "",
+            "payload": None,
+        }
+        try:
+            payload = _normalize_part_payload(row)
+            entry["payload"] = payload
+            part_id = payload["part_id"]
+            name = payload["name"]
+
+            if not part_id or not name:
+                analysis["invalid_rows"] += 1
+                entry["note"] = "Missing item ID or name"
+                analysis["messages"].append(f"Row {row_number}: missing item ID or name")
+            elif part_id in seen_part_ids:
+                analysis["duplicate_rows"] += 1
+                entry["action"] = "duplicate"
+                entry["note"] = f"Duplicate item ID in CSV ({part_id})"
+                analysis["messages"].append(f"Row {row_number}: duplicate item ID in CSV ({part_id})")
+            else:
+                seen_part_ids.add(part_id)
+                existing = get_part(conn, part_id)
+
+                if existing is None:
+                    analysis["inserted"] += 1
+                    entry["action"] = "insert"
+                    entry["note"] = "Will be added as a new item"
+                elif _part_matches_payload(existing, payload):
+                    analysis["unchanged"] += 1
+                    entry["action"] = "unchanged"
+                    entry["note"] = "Matches existing item exactly"
+                else:
+                    changed_fields = _diff_part_fields(existing, payload)
+                    analysis["updated"] += 1
+                    entry["action"] = "update"
+                    entry["note"] = "Will update: " + ", ".join(changed_fields)
+        except Exception as exc:
+            analysis["invalid_rows"] += 1
+            entry["note"] = str(exc)
+            analysis["messages"].append(f"Row {row_number}: {exc}")
+
+        analysis["rows"].append(entry)
+
+    if analysis["duplicate_rows"] or analysis["invalid_rows"] or analysis["total_rows"] == 0:
+        analysis["can_import"] = False
+
+    return analysis
+
+
 def import_parts_from_csv(conn, records):
     """
     Upsert parts from a list of dicts (from CSV import).
@@ -644,47 +734,10 @@ def import_parts_from_csv(conn, records):
     Optional: description, unit, quantity, location, min_level, reorder_qty, active.
     Returns a summary dict with inserted/updated/unchanged/duplicate_rows/invalid_rows counts.
     """
-    summary = {
-        "inserted": 0,
-        "updated": 0,
-        "unchanged": 0,
-        "duplicate_rows": 0,
-        "invalid_rows": 0,
-        "messages": [],
-    }
-    seen_part_ids = set()
-
-    for row_number, row in enumerate(records, start=2):
-        try:
-            payload = _normalize_part_payload(row)
-            part_id = payload["part_id"]
-            name = payload["name"]
-
-            if not part_id or not name:
-                summary["invalid_rows"] += 1
-                summary["messages"].append(f"Row {row_number}: missing item ID or name")
-                continue
-
-            if part_id in seen_part_ids:
-                summary["duplicate_rows"] += 1
-                summary["messages"].append(f"Row {row_number}: duplicate item ID in CSV ({part_id})")
-                continue
-            seen_part_ids.add(part_id)
-
-            existing = get_part(conn, part_id)
-
-            if existing is None:
-                save_part(conn, payload)
-                summary["inserted"] += 1
-            elif _part_matches_payload(existing, payload):
-                summary["unchanged"] += 1
-            else:
-                save_part(conn, payload)
-                summary["updated"] += 1
-
-        except Exception as exc:
-            summary["invalid_rows"] += 1
-            summary["messages"].append(f"Row {row_number}: {exc}")
+    summary = analyze_parts_import(conn, records)
+    for entry in summary["rows"]:
+        if entry["action"] in {"insert", "update"} and entry["payload"] is not None:
+            save_part(conn, entry["payload"])
 
     sync_parts_snapshot_csv(conn)
     return summary

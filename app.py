@@ -6,6 +6,7 @@ import streamlit as st
 from st_keyup import st_keyup
 
 from db import (
+    analyze_parts_import,
     bootstrap_parts_catalog,
     delete_part,
     deposit_stock,
@@ -52,6 +53,59 @@ def live_search_input(label, placeholder, key):
         label_visibility="collapsed",
         debounce=150,
     )
+
+
+def next_import_upload_key():
+    return f"im_upload_{st.session_state.get('im_upload_nonce', 0)}"
+
+
+def clear_import_review_state(reset_uploader=False):
+    st.session_state.pop("im_import_preview", None)
+    if reset_uploader:
+        st.session_state["im_upload_nonce"] = st.session_state.get("im_upload_nonce", 0) + 1
+
+
+def format_import_summary(summary):
+    parts = [
+        f"{summary['inserted']} new",
+        f"{summary['updated']} updated",
+        f"{summary['unchanged']} unchanged",
+    ]
+    if summary["duplicate_rows"]:
+        parts.append(f"{summary['duplicate_rows']} duplicate row(s) skipped")
+    if summary["invalid_rows"]:
+        parts.append(f"{summary['invalid_rows']} invalid row(s)")
+    return "Import complete: " + ", ".join(parts) + "."
+
+
+def import_preview_dataframe(preview):
+    rows = []
+    action_labels = {
+        "insert": "New",
+        "update": "Update",
+        "unchanged": "Unchanged",
+        "duplicate": "Duplicate in CSV",
+        "invalid": "Invalid",
+    }
+    for entry in preview["rows"]:
+        payload = entry.get("payload") or {}
+        rows.append(
+            {
+                "csv_row": entry["row_number"],
+                "review_status": action_labels.get(entry["action"], entry["action"]),
+                "review_note": entry.get("note", ""),
+                "part_id": payload.get("part_id", ""),
+                "name": payload.get("name", ""),
+                "description": payload.get("description", ""),
+                "unit": payload.get("unit", ""),
+                "quantity": payload.get("quantity", ""),
+                "location": payload.get("location", ""),
+                "min_level": payload.get("min_level", ""),
+                "reorder_qty": payload.get("reorder_qty", ""),
+                "active": payload.get("active", ""),
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def inject_theme():
@@ -738,6 +792,52 @@ def show_return_dialog(conn):
         safe_rerun()
 
 
+@st.dialog("Review CSV Import", width="large", dismissible=False)
+def show_import_review_dialog(conn):
+    preview = st.session_state.get("im_import_preview")
+    if not preview:
+        safe_rerun()
+        return
+
+    st.markdown(f"**File:** {preview.get('file_name', 'uploaded.csv')}")
+    st.caption(
+        f"Review all uploaded rows before import. Nothing will be saved until you click Confirm Import."
+    )
+
+    summary_text = format_import_summary(preview)
+    if preview["can_import"]:
+        st.info(summary_text)
+    else:
+        st.error(
+            summary_text + " Fix the flagged rows in your CSV and upload again before importing."
+        )
+
+    preview_df = import_preview_dataframe(preview)
+    if not preview_df.empty:
+        st.dataframe(preview_df, use_container_width=True, hide_index=True, height=380)
+
+    if preview["messages"]:
+        st.caption("Validation notes")
+        for message in preview["messages"][:8]:
+            st.write(f"- {message}")
+
+    confirm_col, cancel_col = st.columns(2)
+    if confirm_col.button(
+        "Confirm Import",
+        key="im_confirm_import",
+        type="primary",
+        disabled=not preview["can_import"],
+    ):
+        result = import_parts_from_csv(conn, preview["records"])
+        st.session_state["im_import_result"] = result
+        clear_import_review_state(reset_uploader=True)
+        safe_rerun()
+
+    if cancel_col.button("Cancel and Reupload", key="im_cancel_import_review", type="secondary"):
+        clear_import_review_state(reset_uploader=True)
+        safe_rerun()
+
+
 def returnables_page(conn):
     role = st.session_state.get("role", "user")
     performed_by = None if role == "manager" else st.session_state["user"]
@@ -1024,34 +1124,33 @@ def item_master_page(conn):
             st.info("No items to export yet.")
 
     with col_imp:
-        uploaded = st.file_uploader("⬆ Import CSV", type=["csv"], key="im_upload")
-        if uploaded is not None:
+        if "im_upload_nonce" not in st.session_state:
+            st.session_state["im_upload_nonce"] = 0
+
+        import_result = st.session_state.pop("im_import_result", None)
+        if import_result is not None:
+            result_text = format_import_summary(import_result)
+            if import_result["duplicate_rows"] or import_result["invalid_rows"]:
+                preview_text = "; ".join(import_result["messages"][:3])
+                st.warning(f"{result_text} {preview_text}".strip())
+            else:
+                st.success(f"✅  {result_text}")
+
+        uploaded = st.file_uploader("⬆ Import CSV", type=["csv"], key=next_import_upload_key())
+        if uploaded is not None and not st.session_state.get("im_import_preview"):
             try:
                 import_df = pd.read_csv(uploaded, dtype=str).fillna("")
                 records = import_df.to_dict("records")
-                summary = import_parts_from_csv(conn, records)
-                message_parts = [
-                    f"{summary['inserted']} new",
-                    f"{summary['updated']} updated",
-                    f"{summary['unchanged']} unchanged",
-                ]
-                if summary["duplicate_rows"]:
-                    message_parts.append(f"{summary['duplicate_rows']} duplicate row(s) skipped")
-                if summary["invalid_rows"]:
-                    message_parts.append(f"{summary['invalid_rows']} invalid row(s)")
-
-                status_text = "Import complete: " + ", ".join(message_parts) + "."
-                if summary["duplicate_rows"] or summary["invalid_rows"]:
-                    preview = "; ".join(summary["messages"][:3])
-                    if preview:
-                        st.warning(f"{status_text} {preview}")
-                    else:
-                        st.warning(status_text)
-                else:
-                    st.success(f"✅  {status_text}")
+                preview = analyze_parts_import(conn, records)
+                preview["records"] = records
+                preview["file_name"] = uploaded.name
+                st.session_state["im_import_preview"] = preview
                 safe_rerun()
             except Exception as exc:
                 st.error(f"Import failed: {exc}")
+
+        if st.session_state.get("im_import_preview"):
+            show_import_review_dialog(conn)
 
 
 def dashboard_page(conn):
