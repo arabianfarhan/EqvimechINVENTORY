@@ -278,9 +278,9 @@ def inject_theme():
         div[data-baseweb="tab-highlight"] { display: none !important; }
 
         /* ── Pills ── */
-        div[class*="st-key-pick_purpose_pills_"] button,
-        div[class*="st-key-pick_user_pills_"] button,
-        div[class*="st-key-pick_returnable_pill_"] button {
+        div[class*="st-key-pick_purpose_pills_"] button[data-testid^="stBaseButton-pills"],
+        div[class*="st-key-pick_user_pills_"] button[data-testid^="stBaseButton-pills"],
+        div[class*="st-key-pick_returnable_pill_"] button[data-testid^="stBaseButton-pills"] {
             border-radius: 999px !important;
             border: 1px solid #cbd5e1 !important;
             background: #ffffff !important;
@@ -288,41 +288,41 @@ def inject_theme():
             font-weight: 700 !important;
             transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease !important;
         }
-        div[class*="st-key-pick_purpose_pills_"] button[aria-selected="true"],
-        div[class*="st-key-pick_purpose_pills_"] button[aria-pressed="true"],
-        div[class*="st-key-pick_user_pills_"] button[aria-selected="true"],
-        div[class*="st-key-pick_user_pills_"] button[aria-pressed="true"],
-        div[class*="st-key-pick_returnable_pill_"] button[aria-selected="true"],
-        div[class*="st-key-pick_returnable_pill_"] button[aria-pressed="true"] {
+        div[class*="st-key-pick_purpose_pills_"] button[kind="pillsActive"],
+        div[class*="st-key-pick_purpose_pills_"] button[data-testid="stBaseButton-pillsActive"],
+        div[class*="st-key-pick_user_pills_"] button[kind="pillsActive"],
+        div[class*="st-key-pick_user_pills_"] button[data-testid="stBaseButton-pillsActive"],
+        div[class*="st-key-pick_returnable_pill_"] button[kind="pillsActive"],
+        div[class*="st-key-pick_returnable_pill_"] button[data-testid="stBaseButton-pillsActive"] {
             color: #ffffff !important;
             border-color: transparent !important;
             box-shadow: 0 6px 16px rgba(15, 23, 42, 0.14) !important;
         }
-        div[class*="st-key-pick_purpose_pills_"] button:nth-of-type(1)[aria-selected="true"],
-        div[class*="st-key-pick_purpose_pills_"] button:nth-of-type(1)[aria-pressed="true"] { background: #ef4444 !important; }
-        div[class*="st-key-pick_purpose_pills_"] button:nth-of-type(2)[aria-selected="true"],
-        div[class*="st-key-pick_purpose_pills_"] button:nth-of-type(2)[aria-pressed="true"] { background: #f97316 !important; }
-        div[class*="st-key-pick_purpose_pills_"] button:nth-of-type(3)[aria-selected="true"],
-        div[class*="st-key-pick_purpose_pills_"] button:nth-of-type(3)[aria-pressed="true"] { background: #06b6d4 !important; }
-        div[class*="st-key-pick_purpose_pills_"] button:nth-of-type(4)[aria-selected="true"],
-        div[class*="st-key-pick_purpose_pills_"] button:nth-of-type(4)[aria-pressed="true"] { background: #8b5cf6 !important; }
-        div[class*="st-key-pick_user_pills_"] button:nth-of-type(1)[aria-selected="true"],
-        div[class*="st-key-pick_user_pills_"] button:nth-of-type(1)[aria-pressed="true"] { background: #ef4444 !important; }
-        div[class*="st-key-pick_user_pills_"] button:nth-of-type(2)[aria-selected="true"],
-        div[class*="st-key-pick_user_pills_"] button:nth-of-type(2)[aria-pressed="true"] { background: #f97316 !important; }
-        div[class*="st-key-pick_user_pills_"] button:nth-of-type(3)[aria-selected="true"],
-        div[class*="st-key-pick_user_pills_"] button:nth-of-type(3)[aria-pressed="true"] { background: #f59e0b !important; }
-        div[class*="st-key-pick_user_pills_"] button:nth-of-type(4)[aria-selected="true"],
-        div[class*="st-key-pick_user_pills_"] button:nth-of-type(4)[aria-pressed="true"] { background: #84cc16 !important; }
-        div[class*="st-key-pick_user_pills_"] button:nth-of-type(5)[aria-selected="true"],
-        div[class*="st-key-pick_user_pills_"] button:nth-of-type(5)[aria-pressed="true"] { background: #10b981 !important; }
-        div[class*="st-key-pick_user_pills_"] button:nth-of-type(6)[aria-selected="true"],
-        div[class*="st-key-pick_user_pills_"] button:nth-of-type(6)[aria-pressed="true"] { background: #06b6d4 !important; }
-        div[class*="st-key-pick_user_pills_"] button:nth-of-type(7)[aria-selected="true"],
-        div[class*="st-key-pick_user_pills_"] button:nth-of-type(7)[aria-pressed="true"] { background: #6366f1 !important; }
-        div[class*="st-key-pick_user_pills_"] button:nth-of-type(8)[aria-selected="true"],
-        div[class*="st-key-pick_user_pills_"] button:nth-of-type(8)[aria-pressed="true"] { background: #64748b !important; }
-        div[class*="st-key-pick_returnable_pill_"] button {
+        div[class*="st-key-pick_purpose_pills_"] button:nth-of-type(1)[kind="pillsActive"],
+        div[class*="st-key-pick_purpose_pills_"] button:nth-of-type(1)[data-testid="stBaseButton-pillsActive"] { background: #ef4444 !important; }
+        div[class*="st-key-pick_purpose_pills_"] button:nth-of-type(2)[kind="pillsActive"],
+        div[class*="st-key-pick_purpose_pills_"] button:nth-of-type(2)[data-testid="stBaseButton-pillsActive"] { background: #f97316 !important; }
+        div[class*="st-key-pick_purpose_pills_"] button:nth-of-type(3)[kind="pillsActive"],
+        div[class*="st-key-pick_purpose_pills_"] button:nth-of-type(3)[data-testid="stBaseButton-pillsActive"] { background: #06b6d4 !important; }
+        div[class*="st-key-pick_purpose_pills_"] button:nth-of-type(4)[kind="pillsActive"],
+        div[class*="st-key-pick_purpose_pills_"] button:nth-of-type(4)[data-testid="stBaseButton-pillsActive"] { background: #8b5cf6 !important; }
+        div[class*="st-key-pick_user_pills_"] button:nth-of-type(1)[kind="pillsActive"],
+        div[class*="st-key-pick_user_pills_"] button:nth-of-type(1)[data-testid="stBaseButton-pillsActive"] { background: #ef4444 !important; }
+        div[class*="st-key-pick_user_pills_"] button:nth-of-type(2)[kind="pillsActive"],
+        div[class*="st-key-pick_user_pills_"] button:nth-of-type(2)[data-testid="stBaseButton-pillsActive"] { background: #f97316 !important; }
+        div[class*="st-key-pick_user_pills_"] button:nth-of-type(3)[kind="pillsActive"],
+        div[class*="st-key-pick_user_pills_"] button:nth-of-type(3)[data-testid="stBaseButton-pillsActive"] { background: #f59e0b !important; }
+        div[class*="st-key-pick_user_pills_"] button:nth-of-type(4)[kind="pillsActive"],
+        div[class*="st-key-pick_user_pills_"] button:nth-of-type(4)[data-testid="stBaseButton-pillsActive"] { background: #84cc16 !important; }
+        div[class*="st-key-pick_user_pills_"] button:nth-of-type(5)[kind="pillsActive"],
+        div[class*="st-key-pick_user_pills_"] button:nth-of-type(5)[data-testid="stBaseButton-pillsActive"] { background: #10b981 !important; }
+        div[class*="st-key-pick_user_pills_"] button:nth-of-type(6)[kind="pillsActive"],
+        div[class*="st-key-pick_user_pills_"] button:nth-of-type(6)[data-testid="stBaseButton-pillsActive"] { background: #06b6d4 !important; }
+        div[class*="st-key-pick_user_pills_"] button:nth-of-type(7)[kind="pillsActive"],
+        div[class*="st-key-pick_user_pills_"] button:nth-of-type(7)[data-testid="stBaseButton-pillsActive"] { background: #6366f1 !important; }
+        div[class*="st-key-pick_user_pills_"] button:nth-of-type(8)[kind="pillsActive"],
+        div[class*="st-key-pick_user_pills_"] button:nth-of-type(8)[data-testid="stBaseButton-pillsActive"] { background: #64748b !important; }
+        div[class*="st-key-pick_returnable_pill_"] button[data-testid^="stBaseButton-pills"] {
             width: 100% !important;
             justify-content: center !important;
             text-align: center !important;
@@ -331,8 +331,8 @@ def inject_theme():
             line-height: 1.35 !important;
             font-size: 0.98rem !important;
         }
-        div[class*="st-key-pick_returnable_pill_"] button[aria-selected="true"],
-        div[class*="st-key-pick_returnable_pill_"] button[aria-pressed="true"] {
+        div[class*="st-key-pick_returnable_pill_"] button[kind="pillsActive"],
+        div[class*="st-key-pick_returnable_pill_"] button[data-testid="stBaseButton-pillsActive"] {
             background: #0f766e !important;
         }
 
