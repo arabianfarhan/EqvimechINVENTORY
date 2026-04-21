@@ -277,6 +277,65 @@ def inject_theme():
         div[data-baseweb="tab-panel"] { padding-top: 1rem !important; }
         div[data-baseweb="tab-highlight"] { display: none !important; }
 
+        /* ── Pills ── */
+        div[class*="st-key-pick_purpose_pills_"] button,
+        div[class*="st-key-pick_user_pills_"] button,
+        div[class*="st-key-pick_returnable_pill_"] button {
+            border-radius: 999px !important;
+            border: 1px solid #cbd5e1 !important;
+            background: #ffffff !important;
+            color: #475569 !important;
+            font-weight: 700 !important;
+            transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease !important;
+        }
+        div[class*="st-key-pick_purpose_pills_"] button[aria-selected="true"],
+        div[class*="st-key-pick_purpose_pills_"] button[aria-pressed="true"],
+        div[class*="st-key-pick_user_pills_"] button[aria-selected="true"],
+        div[class*="st-key-pick_user_pills_"] button[aria-pressed="true"],
+        div[class*="st-key-pick_returnable_pill_"] button[aria-selected="true"],
+        div[class*="st-key-pick_returnable_pill_"] button[aria-pressed="true"] {
+            color: #ffffff !important;
+            border-color: transparent !important;
+            box-shadow: 0 6px 16px rgba(15, 23, 42, 0.14) !important;
+        }
+        div[class*="st-key-pick_purpose_pills_"] button:nth-of-type(1)[aria-selected="true"],
+        div[class*="st-key-pick_purpose_pills_"] button:nth-of-type(1)[aria-pressed="true"] { background: #ef4444 !important; }
+        div[class*="st-key-pick_purpose_pills_"] button:nth-of-type(2)[aria-selected="true"],
+        div[class*="st-key-pick_purpose_pills_"] button:nth-of-type(2)[aria-pressed="true"] { background: #f97316 !important; }
+        div[class*="st-key-pick_purpose_pills_"] button:nth-of-type(3)[aria-selected="true"],
+        div[class*="st-key-pick_purpose_pills_"] button:nth-of-type(3)[aria-pressed="true"] { background: #06b6d4 !important; }
+        div[class*="st-key-pick_purpose_pills_"] button:nth-of-type(4)[aria-selected="true"],
+        div[class*="st-key-pick_purpose_pills_"] button:nth-of-type(4)[aria-pressed="true"] { background: #8b5cf6 !important; }
+        div[class*="st-key-pick_user_pills_"] button:nth-of-type(1)[aria-selected="true"],
+        div[class*="st-key-pick_user_pills_"] button:nth-of-type(1)[aria-pressed="true"] { background: #ef4444 !important; }
+        div[class*="st-key-pick_user_pills_"] button:nth-of-type(2)[aria-selected="true"],
+        div[class*="st-key-pick_user_pills_"] button:nth-of-type(2)[aria-pressed="true"] { background: #f97316 !important; }
+        div[class*="st-key-pick_user_pills_"] button:nth-of-type(3)[aria-selected="true"],
+        div[class*="st-key-pick_user_pills_"] button:nth-of-type(3)[aria-pressed="true"] { background: #f59e0b !important; }
+        div[class*="st-key-pick_user_pills_"] button:nth-of-type(4)[aria-selected="true"],
+        div[class*="st-key-pick_user_pills_"] button:nth-of-type(4)[aria-pressed="true"] { background: #84cc16 !important; }
+        div[class*="st-key-pick_user_pills_"] button:nth-of-type(5)[aria-selected="true"],
+        div[class*="st-key-pick_user_pills_"] button:nth-of-type(5)[aria-pressed="true"] { background: #10b981 !important; }
+        div[class*="st-key-pick_user_pills_"] button:nth-of-type(6)[aria-selected="true"],
+        div[class*="st-key-pick_user_pills_"] button:nth-of-type(6)[aria-pressed="true"] { background: #06b6d4 !important; }
+        div[class*="st-key-pick_user_pills_"] button:nth-of-type(7)[aria-selected="true"],
+        div[class*="st-key-pick_user_pills_"] button:nth-of-type(7)[aria-pressed="true"] { background: #6366f1 !important; }
+        div[class*="st-key-pick_user_pills_"] button:nth-of-type(8)[aria-selected="true"],
+        div[class*="st-key-pick_user_pills_"] button:nth-of-type(8)[aria-pressed="true"] { background: #64748b !important; }
+        div[class*="st-key-pick_returnable_pill_"] button {
+            width: 100% !important;
+            justify-content: center !important;
+            text-align: center !important;
+            min-height: 3rem !important;
+            white-space: normal !important;
+            line-height: 1.35 !important;
+            font-size: 0.98rem !important;
+        }
+        div[class*="st-key-pick_returnable_pill_"] button[aria-selected="true"],
+        div[class*="st-key-pick_returnable_pill_"] button[aria-pressed="true"] {
+            background: #0f766e !important;
+        }
+
         /* ── Inputs ── */
         .stTextInput input, .stTextArea textarea, .stNumberInput input {
             border: 1.8px solid #cbd5e1 !important;
@@ -909,17 +968,21 @@ def show_pick_dialog(conn):
             key=f"pick_purpose_other_{part_id}",
         )
 
-    # Returnable: compact checkbox with a highlighted pill for emphasis
-    return_cols = st.columns([0.12, 0.88])
-    with return_cols[0]:
-        st.checkbox("", key=f"pick_returnable_{part_id}")
-    returnable = st.session_state.get(f"pick_returnable_{part_id}", False)
-    with return_cols[1]:
-        pill_color = "#10b981" if returnable else "#94a3af"
-        pill_text = "↩ RETURNABLE — MATERIAL WILL BE BROUGHT BACK" if returnable else "↩ Returnable (material will be brought back)"
-        st.markdown(
-            f"<div style='display:inline-block;padding:.45rem .6rem;border-radius:10px;background:{pill_color};color:#fff;font-weight:800'>{pill_text}</div>",
-            unsafe_allow_html=True,
+    returnable_option = "↩ Returnable (material will be brought back)"
+    if hasattr(st, "pills"):
+        returnable_selection = st.pills(
+            "Returnable",
+            [returnable_option],
+            selection_mode="single",
+            key=f"pick_returnable_pill_{part_id}",
+            label_visibility="collapsed",
+            width="stretch",
+        )
+        returnable = returnable_selection == returnable_option
+    else:
+        returnable = st.checkbox(
+            returnable_option,
+            key=f"pick_returnable_{part_id}",
         )
 
     # User Name selection: chip-style single select for compact mobile layout
@@ -969,7 +1032,7 @@ def show_pick_dialog(conn):
             st.error("Please enter a machine serial number.")
         elif not purpose_parts:
             st.error("Please select at least one Purpose / Usage.")
-        elif selected_user.strip() == "":
+        elif (selected_user or "").strip() == "":
             st.error("Please specify user name.")
         else:
             try:
@@ -981,7 +1044,7 @@ def show_pick_dialog(conn):
                     st.session_state["user"],
                     st.session_state["role"],
                     purpose_str,
-                    selected_user.strip(),
+                    (selected_user or "").strip(),
                     returnable=returnable,
                 )
                 st.session_state["pick_done"] = {
