@@ -231,25 +231,6 @@ def inject_theme():
                 padding-left: 0.75rem !important;
                 padding-right: 0.75rem !important;
             }
-            div[role="dialog"] div[data-testid="stHorizontalBlock"] {
-                gap: 0.35rem !important;
-            }
-            div[role="dialog"] div[data-testid="stHorizontalBlock"]:has(> div[data-testid="column"]:nth-child(4)):not(:has(> div[data-testid="column"]:nth-child(5))) {
-                flex-wrap: nowrap !important;
-            }
-            div[role="dialog"] div[data-testid="stHorizontalBlock"]:has(> div[data-testid="column"]:nth-child(4)):not(:has(> div[data-testid="column"]:nth-child(5))) > div[data-testid="column"] {
-                min-width: 0 !important;
-                width: 25% !important;
-                flex: 1 1 25% !important;
-            }
-            div[role="dialog"] div[data-testid="stHorizontalBlock"]:has(> div[data-testid="column"]:nth-child(2)):not(:has(> div[data-testid="column"]:nth-child(3))) {
-                flex-wrap: nowrap !important;
-            }
-            div[role="dialog"] div[data-testid="stHorizontalBlock"]:has(> div[data-testid="column"]:nth-child(2)):not(:has(> div[data-testid="column"]:nth-child(3))) > div[data-testid="column"] {
-                min-width: 0 !important;
-                width: 50% !important;
-                flex: 1 1 50% !important;
-            }
             div[role="dialog"] .stCheckbox {
                 margin-bottom: 0.15rem !important;
             }
@@ -900,32 +881,26 @@ def show_pick_dialog(conn):
     )
 
     st.markdown('<div style="margin-top:.5rem;font-weight:700">Purpose / Usage *</div>', unsafe_allow_html=True)
-    purpose_labels = {
-        "Assembly": "🟥 Assembly",
-        "Checking": "🟧 Checking",
-        "Testing": "🟦 Testing",
-        "Other": "⬜ Other",
-    }
-    purpose_keys = {
-        "Assembly": f"pick_purpose_assembly_{part_id}",
-        "Checking": f"pick_purpose_checking_{part_id}",
-        "Testing": f"pick_purpose_testing_{part_id}",
-        "Other": f"pick_purpose_otherchk_{part_id}",
-    }
-    purpose_rows = [["Assembly", "Checking"], ["Testing", "Other"]]
-    purpose_values = {}
-    for row in purpose_rows:
-        purpose_cols = st.columns(2)
-        for index, purpose_name in enumerate(row):
-            with purpose_cols[index]:
-                purpose_values[purpose_name] = st.checkbox(
-                    purpose_labels[purpose_name],
-                    key=purpose_keys[purpose_name],
-                )
-    assembly = purpose_values["Assembly"]
-    checking = purpose_values["Checking"]
-    testing = purpose_values["Testing"]
-    other_purpose_checked = purpose_values["Other"]
+    purpose_options = ["Assembly", "Checking", "Testing", "Other"]
+    if hasattr(st, "pills"):
+        selected_purposes = st.pills(
+            "Purpose / Usage *",
+            purpose_options,
+            selection_mode="multi",
+            key=f"pick_purpose_pills_{part_id}",
+            label_visibility="collapsed",
+        )
+    else:
+        selected_purposes = st.multiselect(
+            "Purpose / Usage *",
+            purpose_options,
+            key=f"pick_purpose_pills_{part_id}",
+            label_visibility="collapsed",
+        )
+    assembly = "Assembly" in selected_purposes
+    checking = "Checking" in selected_purposes
+    testing = "Testing" in selected_purposes
+    other_purpose_checked = "Other" in selected_purposes
     purpose_other = ""
     if other_purpose_checked:
         purpose_other = st.text_input(
@@ -947,48 +922,26 @@ def show_pick_dialog(conn):
             unsafe_allow_html=True,
         )
 
-    # User Name selection: flat 2-column grid to stay compact on mobile
+    # User Name selection: chip-style single select for compact mobile layout
     st.markdown('<div style="margin-top:.6rem;font-weight:700">User Name</div>', unsafe_allow_html=True)
-    name_labels = {
-        "Ravi": "🟥 Ravi",
-        "Shani": "🟧 Shani",
-        "Suraj": "🟨 Suraj",
-        "Mangesh": "🟩 Mangesh",
-        "Ram": "🟢 Ram",
-        "Sonu": "🔵 Sonu",
-        "Sandip": "🟣 Sandip",
-        "Other": "⬜ Other",
-    }
-    names = list(name_labels.keys())
+    user_options = ["Ravi", "Shani", "Suraj", "Mangesh", "Ram", "Sonu", "Sandip", "Other"]
+    if hasattr(st, "pills"):
+        selected_user = st.pills(
+            "User Name",
+            user_options,
+            selection_mode="single",
+            key=f"pick_user_pills_{part_id}",
+            label_visibility="collapsed",
+        )
+    else:
+        selected_user = st.radio(
+            "User Name",
+            user_options,
+            horizontal=True,
+            key=f"pick_user_pills_{part_id}",
+            label_visibility="collapsed",
+        )
 
-    selected_key = f"pick_selected_user_{part_id}"
-    if selected_key not in st.session_state:
-        st.session_state[selected_key] = ""
-
-    def _make_user_cb(this_key, this_name):
-        def _cb():
-            # if this checkbox was checked, uncheck others and set selection; if unchecked, clear selection
-            if st.session_state.get(this_key):
-                for nm in names:
-                    k = f"pick_user_chk_{part_id}_{nm}"
-                    if k != this_key:
-                        st.session_state[k] = False
-                st.session_state[selected_key] = this_name
-            else:
-                st.session_state[selected_key] = ""
-
-        return _cb
-
-    cols_per_row = 2
-    for i in range(0, len(names), cols_per_row):
-        row = names[i : i + cols_per_row]
-        cols_row = st.columns(len(row))
-        for j, n in enumerate(row):
-            key = f"pick_user_chk_{part_id}_{n}"
-            with cols_row[j]:
-                st.checkbox(name_labels[n], key=key, on_change=_make_user_cb(key, n))
-
-    selected_user = st.session_state.get(selected_key, "")
     if selected_user == "Other":
         user_other = st.text_input("Specify other user", placeholder="Name", key=f"pick_user_other_{part_id}")
         if user_other.strip():
