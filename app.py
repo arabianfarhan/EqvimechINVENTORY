@@ -231,6 +231,25 @@ def inject_theme():
                 padding-left: 0.75rem !important;
                 padding-right: 0.75rem !important;
             }
+            div[role="dialog"] div[data-testid="stHorizontalBlock"] {
+                gap: 0.35rem !important;
+            }
+            div[role="dialog"] div[data-testid="stHorizontalBlock"]:has(> div[data-testid="column"]:nth-child(4)):not(:has(> div[data-testid="column"]:nth-child(5))) {
+                flex-wrap: nowrap !important;
+            }
+            div[role="dialog"] div[data-testid="stHorizontalBlock"]:has(> div[data-testid="column"]:nth-child(4)):not(:has(> div[data-testid="column"]:nth-child(5))) > div[data-testid="column"] {
+                min-width: 0 !important;
+                width: 25% !important;
+                flex: 1 1 25% !important;
+            }
+            div[role="dialog"] div[data-testid="stHorizontalBlock"]:has(> div[data-testid="column"]:nth-child(2)):not(:has(> div[data-testid="column"]:nth-child(3))) {
+                flex-wrap: nowrap !important;
+            }
+            div[role="dialog"] div[data-testid="stHorizontalBlock"]:has(> div[data-testid="column"]:nth-child(2)):not(:has(> div[data-testid="column"]:nth-child(3))) > div[data-testid="column"] {
+                min-width: 0 !important;
+                width: 50% !important;
+                flex: 1 1 50% !important;
+            }
             div[role="dialog"] .stCheckbox {
                 margin-bottom: 0.15rem !important;
             }
