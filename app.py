@@ -340,6 +340,33 @@ def inject_theme():
         div[data-testid="stButtonGroup"] button[kind="pillsActive"] {
             color: #ffffff !important;
         }
+        div[class*="st-key-main_nav_"] {
+            margin: 0.2rem 0 0.8rem 0 !important;
+        }
+        div[class*="st-key-main_nav_"] button[data-testid^="stBaseButton-pills"] {
+            min-height: 3.55rem !important;
+            border-radius: 999px !important;
+            background: rgba(255, 255, 255, 0.26) !important;
+            color: #475569 !important;
+            border: 1px solid rgba(255, 255, 255, 0.24) !important;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.24) !important;
+        }
+        div[class*="st-key-main_nav_"] button[data-testid="stBaseButton-pillsActive"],
+        div[class*="st-key-main_nav_"] button[kind="pillsActive"] {
+            background: linear-gradient(135deg, rgba(20, 184, 166, 0.92), rgba(14, 116, 144, 0.82)) !important;
+            color: #ffffff !important;
+            border-color: rgba(255, 255, 255, 0.16) !important;
+            box-shadow: 0 14px 30px rgba(13, 148, 136, 0.22) !important;
+        }
+        div[class*="st-key-main_nav_"] button[data-testid="stBaseButton-pillsActive"] *,
+        div[class*="st-key-main_nav_"] button[kind="pillsActive"] * {
+            color: #ffffff !important;
+            fill: #ffffff !important;
+        }
+        div[class*="st-key-main_nav_"] button[data-testid^="stBaseButton-pills"]:not([data-testid="stBaseButton-pillsActive"]) *,
+        div[class*="st-key-main_nav_"] button[data-testid^="stBaseButton-pills"]:not([kind="pillsActive"]) * {
+            color: #475569 !important;
+        }
 
         /* ── Pills ── */
         div[class*="st-key-pick_purpose_pills_"] button[data-testid^="stBaseButton-pills"],
