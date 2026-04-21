@@ -874,12 +874,21 @@ def show_pick_dialog(conn):
             placeholder="e.g. UTM-200 calibration",
             key=f"pick_purpose_other_{part_id}",
         )
-    returnable = st.checkbox(
-        "↩  Returnable (material will be brought back)",
-        key=f"pick_returnable_{part_id}",
-    )
 
-    # Replace Note with User Name selection
+    # Returnable: compact checkbox with a highlighted pill for emphasis
+    return_cols = st.columns([0.12, 0.88])
+    with return_cols[0]:
+        st.checkbox("", key=f"pick_returnable_{part_id}")
+    returnable = st.session_state.get(f"pick_returnable_{part_id}", False)
+    with return_cols[1]:
+        pill_color = "#10b981" if returnable else "#94a3af"
+        pill_text = "↩ RETURNABLE — MATERIAL WILL BE BROUGHT BACK" if returnable else "↩ Returnable (material will be brought back)"
+        st.markdown(
+            f"<div style='display:inline-block;padding:.45rem .6rem;border-radius:10px;background:{pill_color};color:#fff;font-weight:800'>{pill_text}</div>",
+            unsafe_allow_html=True,
+        )
+
+    # User Name selection: show colored name badges in a compact 4x2 grid with a small checkbox beside each
     st.markdown('<div style="margin-top:.6rem;font-weight:700">User Name</div>', unsafe_allow_html=True)
     name_colors = {
         "Ravi": "#ef4444",
@@ -892,15 +901,46 @@ def show_pick_dialog(conn):
         "Other": "#9ca3af",
     }
     names = list(name_colors.keys())
-    badges_html = "".join([
-        f"<span style='display:inline-block;margin:0 .25rem .25rem 0;padding:.35rem .6rem;border-radius:999px;background:{name_colors[n]};color:#fff;font-weight:700'>{n}</span>" for n in names
-    ])
-    st.markdown(badges_html, unsafe_allow_html=True)
-    user_name = st.radio("Choose user", names, key=f"pick_user_{part_id}")
-    user_other = ""
-    if user_name == "Other":
+
+    selected_key = f"pick_selected_user_{part_id}"
+    if selected_key not in st.session_state:
+        st.session_state[selected_key] = ""
+
+    def _make_user_cb(this_key, this_name):
+        def _cb():
+            # if this checkbox was checked, uncheck others and set selection; if unchecked, clear selection
+            if st.session_state.get(this_key):
+                for nm in names:
+                    k = f"pick_user_chk_{part_id}_{nm}"
+                    if k != this_key:
+                        st.session_state[k] = False
+                st.session_state[selected_key] = this_name
+            else:
+                st.session_state[selected_key] = ""
+
+        return _cb
+
+    cols_per_row = 4
+    for i in range(0, len(names), cols_per_row):
+        row = names[i : i + cols_per_row]
+        cols_row = st.columns(len(row))
+        for j, n in enumerate(row):
+            key = f"pick_user_chk_{part_id}_{n}"
+            badge_html = (
+                f"<div style='display:inline-block;padding:.35rem .6rem;border-radius:999px;background:{name_colors[n]};color:#fff;font-weight:700'>{n}</div>"
+            )
+            with cols_row[j]:
+                subcols = st.columns([0.14, 0.86])
+                with subcols[0]:
+                    st.checkbox("", key=key, on_change=_make_user_cb(key, n))
+                with subcols[1]:
+                    st.markdown(badge_html, unsafe_allow_html=True)
+
+    selected_user = st.session_state.get(selected_key, "")
+    if selected_user == "Other":
         user_other = st.text_input("Specify other user", placeholder="Name", key=f"pick_user_other_{part_id}")
-    selected_user = user_other.strip() if user_name == "Other" else user_name
+        if user_other.strip():
+            selected_user = user_other.strip()
 
     action_col, close_col = st.columns(2)
     if action_col.button("✅  Confirm Material Issue", key=f"confirm_pick_{part_id}", type="primary"):
