@@ -226,6 +226,26 @@ def inject_theme():
                 padding-top: 3.5rem !important;
             }
         }
+        @media (max-width: 640px) {
+            .block-container {
+                padding-left: 0.75rem !important;
+                padding-right: 0.75rem !important;
+            }
+            div[role="dialog"] div[data-testid="stHorizontalBlock"] {
+                flex-wrap: wrap !important;
+                gap: 0.4rem !important;
+            }
+            div[role="dialog"] div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {
+                min-width: calc(50% - 0.25rem) !important;
+                flex: 1 1 calc(50% - 0.25rem) !important;
+            }
+            div[role="dialog"] .stCheckbox {
+                margin-bottom: 0.15rem !important;
+            }
+            div[role="dialog"] .stButton > button {
+                min-height: 2.6rem !important;
+            }
+        }
 
         /* ── Sidebar ── */
         section[data-testid="stSidebar"] {
