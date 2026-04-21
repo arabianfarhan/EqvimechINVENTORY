@@ -881,11 +881,39 @@ def show_pick_dialog(conn):
     )
 
     st.markdown('<div style="margin-top:.5rem;font-weight:700">Purpose / Usage *</div>', unsafe_allow_html=True)
-    cols = st.columns(4)
-    assembly = cols[0].checkbox("Assembly", key=f"pick_purpose_assembly_{part_id}")
-    checking = cols[1].checkbox("Checking", key=f"pick_purpose_checking_{part_id}")
-    testing = cols[2].checkbox("Testing", key=f"pick_purpose_testing_{part_id}")
-    other_purpose_checked = cols[3].checkbox("Other", key=f"pick_purpose_otherchk_{part_id}")
+    purpose_colors = {
+        "Assembly": "#ef4444",
+        "Checking": "#f97316",
+        "Testing": "#06b6d4",
+        "Other": "#9ca3af",
+    }
+    purpose_keys = {
+        "Assembly": f"pick_purpose_assembly_{part_id}",
+        "Checking": f"pick_purpose_checking_{part_id}",
+        "Testing": f"pick_purpose_testing_{part_id}",
+        "Other": f"pick_purpose_otherchk_{part_id}",
+    }
+    purpose_rows = [["Assembly", "Checking"], ["Testing", "Other"]]
+    purpose_values = {}
+    for row in purpose_rows:
+        purpose_cols = st.columns(2)
+        for index, purpose_name in enumerate(row):
+            with purpose_cols[index]:
+                purpose_inner_cols = st.columns([0.18, 0.82])
+                with purpose_inner_cols[0]:
+                    purpose_values[purpose_name] = st.checkbox(
+                        "",
+                        key=purpose_keys[purpose_name],
+                    )
+                with purpose_inner_cols[1]:
+                    st.markdown(
+                        f"<div style='display:inline-block;padding:.35rem .6rem;border-radius:999px;background:{purpose_colors[purpose_name]};color:#fff;font-weight:700'>{purpose_name}</div>",
+                        unsafe_allow_html=True,
+                    )
+    assembly = purpose_values["Assembly"]
+    checking = purpose_values["Checking"]
+    testing = purpose_values["Testing"]
+    other_purpose_checked = purpose_values["Other"]
     purpose_other = ""
     if other_purpose_checked:
         purpose_other = st.text_input(
