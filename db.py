@@ -498,23 +498,33 @@ def save_master_table(conn, rows):
         raise
 
 
-def pick_material(conn, part_id, machine_serials, performed_by, performed_role, purpose, note="", returnable=False):
+def pick_material(conn, part_id, machine_serials, qty, performed_by, performed_role, purpose, note="", returnable=False):
     c = conn.cursor()
     part = get_part(conn, part_id)
     if part is None:
         raise ValueError("Part not found")
     if not part["active"]:
         raise ValueError("Inactive items cannot be issued")
-    qty = len(machine_serials)
     if qty <= 0:
+        raise ValueError("Quantity must be at least 1")
+    if not machine_serials or len(machine_serials) == 0:
         raise ValueError("At least one serial number is required")
+
+    # If user provided a single serial but requested multiple units, duplicate it.
+    if len(machine_serials) == 1:
+        machine_list = [machine_serials[0]] * qty
+    elif len(machine_serials) == qty:
+        machine_list = list(machine_serials)
+    else:
+        raise ValueError("Number of provided serials does not match quantity")
+
     if part["quantity"] < qty:
         raise ValueError("Insufficient stock")
 
     try:
         c.execute("BEGIN")
         running_balance = part["quantity"]
-        for machine_sn in machine_serials:
+        for machine_sn in machine_list:
             previous_stock = running_balance
             running_balance -= 1
             c.execute(

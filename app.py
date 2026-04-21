@@ -844,31 +844,31 @@ def show_pick_dialog(conn):
     qty = st.number_input(
         "Quantity to pick",
         min_value=1,
-        max_value=int(part["quantity"]),
+        max_value=min(int(part["quantity"]), 8),
         value=1,
         step=1,
         key=f"pick_qty_{part_id}",
     )
     st.markdown(
         f'<p style="color:#64748b;font-size:0.78rem;font-weight:700;text-transform:uppercase;'
-        f'letter-spacing:.06em;margin:0 0 .3rem 0">Machine serial numbers '
-        f'({int(qty)} required — one per line or comma-separated)</p>',
+        f'letter-spacing:.06em;margin:0 0 .3rem 0">Machine serial number '
+        f'(required — one per material issue)</p>',
         unsafe_allow_html=True,
     )
-    serials_raw = st.text_area(
-        "serial_numbers_input",
-        placeholder="e.g.\nVMC-120\nVMC-121",
-        height=110,
-        key=f"pick_serials_{part_id}",
-        label_visibility="collapsed",
+    serial_input = st.text_input(
+        "Machine serial number *",
+        placeholder="e.g. VMC-120",
+        key=f"pick_serial_{part_id}",
     )
-    purpose_options = st.multiselect(
-        "Purpose / Usage *",
-        ["Assembly", "Checking", "Testing", "Other"],
-        key=f"pick_purpose_opts_{part_id}",
-    )
+
+    st.markdown('<div style="margin-top:.5rem;font-weight:700">Purpose / Usage *</div>', unsafe_allow_html=True)
+    cols = st.columns(4)
+    assembly = cols[0].checkbox("Assembly", key=f"pick_purpose_assembly_{part_id}")
+    checking = cols[1].checkbox("Checking", key=f"pick_purpose_checking_{part_id}")
+    testing = cols[2].checkbox("Testing", key=f"pick_purpose_testing_{part_id}")
+    other_purpose_checked = cols[3].checkbox("Other", key=f"pick_purpose_otherchk_{part_id}")
     purpose_other = ""
-    if "Other" in purpose_options:
+    if other_purpose_checked:
         purpose_other = st.text_input(
             "Specify other purpose",
             placeholder="e.g. UTM-200 calibration",
@@ -878,39 +878,65 @@ def show_pick_dialog(conn):
         "↩  Returnable (material will be brought back)",
         key=f"pick_returnable_{part_id}",
     )
-    note = st.text_input(
-        "Note (optional)",
-        placeholder="e.g. Urgent – project deadline",
-        key=f"pick_note_{part_id}",
-    )
+
+    # Replace Note with User Name selection
+    st.markdown('<div style="margin-top:.6rem;font-weight:700">User Name</div>', unsafe_allow_html=True)
+    name_colors = {
+        "Ravi": "#ef4444",
+        "Shani": "#f97316",
+        "Suraj": "#f59e0b",
+        "Mangesh": "#84cc16",
+        "Ram": "#10b981",
+        "Sonu": "#06b6d4",
+        "Sandip": "#6366f1",
+        "Other": "#9ca3af",
+    }
+    names = list(name_colors.keys())
+    badges_html = "".join([
+        f"<span style='display:inline-block;margin:0 .25rem .25rem 0;padding:.35rem .6rem;border-radius:999px;background:{name_colors[n]};color:#fff;font-weight:700'>{n}</span>" for n in names
+    ])
+    st.markdown(badges_html, unsafe_allow_html=True)
+    user_name = st.radio("Choose user", names, key=f"pick_user_{part_id}")
+    user_other = ""
+    if user_name == "Other":
+        user_other = st.text_input("Specify other user", placeholder="Name", key=f"pick_user_other_{part_id}")
+    selected_user = user_other.strip() if user_name == "Other" else user_name
 
     action_col, close_col = st.columns(2)
     if action_col.button("✅  Confirm Material Issue", key=f"confirm_pick_{part_id}", type="primary"):
-        serials = [s.strip() for s in serials_raw.replace("\n", ",").split(",") if s.strip()]
-        purpose_parts = [p for p in purpose_options if p != "Other"]
-        if purpose_other.strip():
-            purpose_parts.append(purpose_other.strip())
+        serial = serial_input.strip()
+        purpose_parts = []
+        if assembly:
+            purpose_parts.append("Assembly")
+        if checking:
+            purpose_parts.append("Checking")
+        if testing:
+            purpose_parts.append("Testing")
+        if other_purpose_checked:
+            if purpose_other.strip():
+                purpose_parts.append(purpose_other.strip())
+            else:
+                st.error("Please specify the other purpose.")
+                return
         purpose_str = ", ".join(purpose_parts)
 
-        if len(serials) != int(qty):
-            st.error(
-                f"You entered {len(serials)} serial number(s) but picked {int(qty)} unit(s). "
-                "One serial number per unit is required."
-            )
-        elif not purpose_options:
+        if not serial:
+            st.error("Please enter a machine serial number.")
+        elif not purpose_parts:
             st.error("Please select at least one Purpose / Usage.")
-        elif "Other" in purpose_options and not purpose_other.strip():
-            st.error("Please specify the other purpose.")
+        elif selected_user.strip() == "":
+            st.error("Please specify user name.")
         else:
             try:
                 new_balance = pick_material(
                     conn,
                     part["part_id"],
-                    serials,
+                    [serial],
+                    int(qty),
                     st.session_state["user"],
                     st.session_state["role"],
                     purpose_str,
-                    note.strip(),
+                    selected_user.strip(),
                     returnable=returnable,
                 )
                 st.session_state["pick_done"] = {
