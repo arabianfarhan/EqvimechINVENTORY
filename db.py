@@ -510,11 +510,13 @@ def pick_material(conn, part_id, machine_serials, qty, performed_by, performed_r
     if not machine_serials or len(machine_serials) == 0:
         raise ValueError("At least one serial number is required")
 
-    # If user provided a single serial but requested multiple units, duplicate it.
+    # Material issue is now recorded as a single transaction row, even when qty > 1.
+    # Keep backward compatibility by accepting either one shared serial or multiple
+    # serials and storing them in a single field.
     if len(machine_serials) == 1:
-        machine_list = [machine_serials[0]] * qty
+        machine_sn = machine_serials[0]
     elif len(machine_serials) == qty:
-        machine_list = list(machine_serials)
+        machine_sn = ", ".join(machine_serials)
     else:
         raise ValueError("Number of provided serials does not match quantity")
 
@@ -523,33 +525,31 @@ def pick_material(conn, part_id, machine_serials, qty, performed_by, performed_r
 
     try:
         c.execute("BEGIN")
-        running_balance = part["quantity"]
-        for machine_sn in machine_list:
-            previous_stock = running_balance
-            running_balance -= 1
-            c.execute(
-                """
-                INSERT INTO transactions (
-                    tx_type, part_id, part_name, qty, unit, performed_by, performed_role,
-                    machine_sn, purpose, note, prev_stock, balance_stock, returnable
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    "issue",
-                    part_id,
-                    part["name"],
-                    1,
-                    part["unit"],
-                    performed_by,
-                    performed_role,
-                    machine_sn,
-                    purpose,
-                    note,
-                    previous_stock,
-                    running_balance,
-                    1 if returnable else 0,
-                ),
-            )
+        previous_stock = part["quantity"]
+        running_balance = previous_stock - qty
+        c.execute(
+            """
+            INSERT INTO transactions (
+                tx_type, part_id, part_name, qty, unit, performed_by, performed_role,
+                machine_sn, purpose, note, prev_stock, balance_stock, returnable
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "issue",
+                part_id,
+                part["name"],
+                qty,
+                part["unit"],
+                performed_by,
+                performed_role,
+                machine_sn,
+                purpose,
+                note,
+                previous_stock,
+                running_balance,
+                1 if returnable else 0,
+            ),
+        )
         c.execute(
             "UPDATE parts SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE part_id = ?",
             (running_balance, part_id),
@@ -823,7 +823,7 @@ def get_machine_usage(conn, limit=10):
     c = conn.cursor()
     return c.execute(
         """
-        SELECT machine_sn, COUNT(*) AS issued_lines
+        SELECT machine_sn, SUM(qty) AS issued_lines
         FROM transactions
         WHERE tx_type = 'issue' AND machine_sn <> ''
         GROUP BY machine_sn
@@ -840,7 +840,7 @@ def get_machine_usage_by_category(conn, category=None, limit=10):
         return get_machine_usage(conn, limit=limit)
     return c.execute(
         """
-        SELECT t.machine_sn, COUNT(*) AS issued_lines
+        SELECT t.machine_sn, SUM(t.qty) AS issued_lines
         FROM transactions t
         JOIN parts p ON p.part_id = t.part_id
         WHERE t.tx_type = 'issue' AND t.machine_sn <> '' AND p.category = ?

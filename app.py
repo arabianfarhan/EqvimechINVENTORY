@@ -215,6 +215,35 @@ def inject_theme():
     st.markdown(
         """
         <style>
+        :root {
+            --glass-bg: rgba(255, 255, 255, 0.30);
+            --glass-bg-strong: rgba(255, 255, 255, 0.46);
+            --glass-bg-soft: rgba(255, 255, 255, 0.20);
+            --glass-stroke: rgba(255, 255, 255, 0.45);
+            --glass-stroke-strong: rgba(148, 163, 184, 0.28);
+            --glass-shadow: 0 18px 45px rgba(15, 23, 42, 0.12);
+            --glass-shadow-soft: 0 10px 24px rgba(15, 23, 42, 0.08);
+            --glass-blur: blur(18px);
+            --glass-text: #0f172a;
+            --glass-muted: #475569;
+            --glass-accent: #14b8a6;
+            --glass-accent-strong: #0f766e;
+        }
+
+        [data-testid="stAppViewContainer"] {
+            background:
+                radial-gradient(circle at top left, rgba(34, 211, 238, 0.22), transparent 26%),
+                radial-gradient(circle at top right, rgba(251, 191, 36, 0.20), transparent 22%),
+                radial-gradient(circle at bottom left, rgba(59, 130, 246, 0.16), transparent 28%),
+                linear-gradient(135deg, #eef6ff 0%, #edfdf8 48%, #f7fbff 100%) !important;
+        }
+        [data-testid="stHeader"] {
+            background: rgba(255, 255, 255, 0.08) !important;
+        }
+        .main > div {
+            background: transparent !important;
+        }
+
         /* ── Layout ── */
         .block-container {
             padding-top: 2.5rem !important;
@@ -248,44 +277,81 @@ def inject_theme():
 
         /* ── Sidebar ── */
         section[data-testid="stSidebar"] {
-            border-right: 1px solid #e2e8f0 !important;
+            background: rgba(255, 255, 255, 0.18) !important;
+            backdrop-filter: var(--glass-blur) !important;
+            -webkit-backdrop-filter: var(--glass-blur) !important;
+            border-right: 1px solid var(--glass-stroke) !important;
+            box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.22) !important;
+        }
+        section[data-testid="stSidebar"] > div {
+            background: transparent !important;
         }
 
         /* ── Tabs ── */
         div[data-baseweb="tab-list"] {
-            background: #e2e8f0 !important;
-            border-radius: 12px !important;
-            padding: 4px !important;
-            gap: 2px !important;
-            border: none !important;
+            background: var(--glass-bg) !important;
+            backdrop-filter: var(--glass-blur) !important;
+            -webkit-backdrop-filter: var(--glass-blur) !important;
+            border-radius: 18px !important;
+            padding: 6px !important;
+            gap: 6px !important;
+            border: 1px solid var(--glass-stroke) !important;
+            box-shadow: var(--glass-shadow-soft) !important;
             overflow-x: auto !important;
         }
         button[data-baseweb="tab"] {
-            background: transparent !important;
-            color: #64748b !important;
-            border-radius: 9px !important;
-            font-weight: 600 !important;
+            background: rgba(255, 255, 255, 0.10) !important;
+            color: var(--glass-muted) !important;
+            border-radius: 14px !important;
+            font-weight: 700 !important;
             font-size: 0.82rem !important;
-            padding: 0.38rem 0.75rem !important;
-            border: none !important;
+            padding: 0.44rem 0.82rem !important;
+            border: 1px solid transparent !important;
             white-space: nowrap !important;
         }
         button[data-baseweb="tab"][aria-selected="true"] {
-            background: #0d9488 !important;
+            background: linear-gradient(135deg, rgba(20, 184, 166, 0.88), rgba(14, 116, 144, 0.78)) !important;
             color: #ffffff !important;
+            box-shadow: 0 10px 24px rgba(13, 148, 136, 0.20) !important;
         }
         div[data-baseweb="tab-panel"] { padding-top: 1rem !important; }
         div[data-baseweb="tab-highlight"] { display: none !important; }
+
+        div[data-testid="stButtonGroup"] {
+            background: var(--glass-bg) !important;
+            backdrop-filter: var(--glass-blur) !important;
+            -webkit-backdrop-filter: var(--glass-blur) !important;
+            border: 1px solid var(--glass-stroke) !important;
+            border-radius: 18px !important;
+            padding: 0.4rem !important;
+            box-shadow: var(--glass-shadow-soft) !important;
+        }
+        div[data-testid="stButtonGroup"] > div {
+            width: 100% !important;
+        }
+        div[data-testid="stButtonGroup"] button[data-testid^="stBaseButton-pills"] {
+            background: rgba(255, 255, 255, 0.22) !important;
+            border: 1px solid rgba(255, 255, 255, 0.18) !important;
+            color: var(--glass-muted) !important;
+            font-weight: 700 !important;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.18) !important;
+        }
+        div[data-testid="stButtonGroup"] button[data-testid="stBaseButton-pillsActive"],
+        div[data-testid="stButtonGroup"] button[kind="pillsActive"] {
+            color: #ffffff !important;
+        }
 
         /* ── Pills ── */
         div[class*="st-key-pick_purpose_pills_"] button[data-testid^="stBaseButton-pills"],
         div[class*="st-key-pick_user_pills_"] button[data-testid^="stBaseButton-pills"],
         div[class*="st-key-pick_returnable_pill_"] button[data-testid^="stBaseButton-pills"] {
             border-radius: 999px !important;
-            border: 1px solid #cbd5e1 !important;
-            background: #ffffff !important;
-            color: #475569 !important;
+            border: 1px solid rgba(255, 255, 255, 0.18) !important;
+            background: rgba(255, 255, 255, 0.24) !important;
+            color: var(--glass-muted) !important;
             font-weight: 700 !important;
+            backdrop-filter: blur(10px) !important;
+            -webkit-backdrop-filter: blur(10px) !important;
             transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease !important;
         }
         div[class*="st-key-pick_purpose_pills_"] button[kind="pillsActive"],
@@ -296,7 +362,7 @@ def inject_theme():
         div[class*="st-key-pick_returnable_pill_"] button[data-testid="stBaseButton-pillsActive"] {
             color: #ffffff !important;
             border-color: transparent !important;
-            box-shadow: 0 6px 16px rgba(15, 23, 42, 0.14) !important;
+            box-shadow: 0 10px 24px rgba(15, 23, 42, 0.16) !important;
         }
         div[class*="st-key-pick_purpose_pills_"] button:nth-of-type(1)[kind="pillsActive"],
         div[class*="st-key-pick_purpose_pills_"] button:nth-of-type(1)[data-testid="stBaseButton-pillsActive"] { background: #ef4444 !important; }
@@ -338,27 +404,32 @@ def inject_theme():
 
         /* ── Inputs ── */
         .stTextInput input, .stTextArea textarea, .stNumberInput input {
-            border: 1.8px solid #cbd5e1 !important;
-            border-radius: 8px !important;
-            background: #ffffff !important;
-            color: #0f172a !important;
-            box-shadow: inset 0 1px 2px rgba(15,23,42,0.04) !important;
+            border: 1px solid var(--glass-stroke) !important;
+            border-radius: 16px !important;
+            background: var(--glass-bg-soft) !important;
+            backdrop-filter: blur(12px) !important;
+            -webkit-backdrop-filter: blur(12px) !important;
+            color: var(--glass-text) !important;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.22), var(--glass-shadow-soft) !important;
             transition: border-color 0.15s, box-shadow 0.15s !important;
         }
         .stTextInput input:focus, .stTextArea textarea:focus, .stNumberInput input:focus {
-            border-color: #0d9488 !important;
-            box-shadow: 0 0 0 3px rgba(13,148,136,0.15), inset 0 1px 2px rgba(15,23,42,0.04) !important;
+            border-color: rgba(20, 184, 166, 0.55) !important;
+            box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.14), var(--glass-shadow-soft) !important;
             outline: none !important;
         }
         /* selectbox / multiselect borders */
         div[data-baseweb="select"] > div {
-            border: 1.8px solid #cbd5e1 !important;
-            border-radius: 8px !important;
-            background: #ffffff !important;
+            border: 1px solid var(--glass-stroke) !important;
+            border-radius: 16px !important;
+            background: var(--glass-bg-soft) !important;
+            backdrop-filter: blur(12px) !important;
+            -webkit-backdrop-filter: blur(12px) !important;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.22), var(--glass-shadow-soft) !important;
         }
         div[data-baseweb="select"] > div:focus-within {
-            border-color: #0d9488 !important;
-            box-shadow: 0 0 0 3px rgba(13,148,136,0.15) !important;
+            border-color: rgba(20, 184, 166, 0.55) !important;
+            box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.14), var(--glass-shadow-soft) !important;
         }
         .stTextInput label, .stTextArea label, .stNumberInput label,
         .stSelectbox label, .stCheckbox label, .stRadio label {
@@ -370,26 +441,30 @@ def inject_theme():
 
         /* ── Buttons ── */
         .stButton > button[kind="primary"] {
-            background: #0d9488 !important;
+            background: linear-gradient(135deg, rgba(20, 184, 166, 0.88), rgba(14, 116, 144, 0.76)) !important;
             color: #ffffff !important;
-            border: none !important;
-            border-radius: 10px !important;
+            border: 1px solid rgba(255, 255, 255, 0.22) !important;
+            border-radius: 16px !important;
+            backdrop-filter: blur(12px) !important;
+            -webkit-backdrop-filter: blur(12px) !important;
             font-weight: 700 !important;
             font-size: 0.93rem !important;
             min-height: 2.75rem !important;
             width: 100% !important;
             transition: background 0.15s, box-shadow 0.15s !important;
-            box-shadow: 0 1px 3px rgba(13,148,136,0.2) !important;
+            box-shadow: 0 14px 28px rgba(13,148,136,0.18) !important;
         }
         .stButton > button[kind="primary"]:hover {
-            background: #0f766e !important;
-            box-shadow: 0 4px 12px rgba(13,148,136,0.28) !important;
+            background: linear-gradient(135deg, rgba(15, 118, 110, 0.92), rgba(8, 145, 178, 0.84)) !important;
+            box-shadow: 0 18px 36px rgba(13,148,136,0.22) !important;
         }
         .stButton > button[kind="secondary"] {
-            background: #ffffff !important;
-            color: #0f172a !important;
-            border: 1px solid #dbe3ee !important;
-            border-radius: 12px !important;
+            background: var(--glass-bg-strong) !important;
+            color: var(--glass-text) !important;
+            border: 1px solid var(--glass-stroke) !important;
+            border-radius: 16px !important;
+            backdrop-filter: var(--glass-blur) !important;
+            -webkit-backdrop-filter: var(--glass-blur) !important;
             font-weight: 600 !important;
             font-size: 0.92rem !important;
             min-height: 3rem !important;
@@ -398,47 +473,52 @@ def inject_theme():
             text-align: left !important;
             white-space: normal !important;
             line-height: 1.35 !important;
-            box-shadow: none !important;
+            box-shadow: var(--glass-shadow-soft) !important;
         }
         .stButton > button[kind="secondary"]:hover {
-            border-color: #0d9488 !important;
-            color: #0d9488 !important;
-            background: #f8fffd !important;
+            border-color: rgba(20, 184, 166, 0.40) !important;
+            color: var(--glass-accent-strong) !important;
+            background: rgba(255, 255, 255, 0.56) !important;
         }
         .stFormSubmitButton > button {
-            background: #0d9488 !important;
+            background: linear-gradient(135deg, rgba(20, 184, 166, 0.88), rgba(14, 116, 144, 0.76)) !important;
             color: #ffffff !important;
-            border: none !important;
-            border-radius: 10px !important;
+            border: 1px solid rgba(255, 255, 255, 0.22) !important;
+            border-radius: 16px !important;
             font-weight: 700 !important;
             min-height: 2.75rem !important;
         }
-        .stFormSubmitButton > button:hover { background: #0f766e !important; }
+        .stFormSubmitButton > button:hover { background: linear-gradient(135deg, rgba(15, 118, 110, 0.92), rgba(8, 145, 178, 0.84)) !important; }
         .stDownloadButton > button {
-            background: transparent !important;
-            color: #0d9488 !important;
-            border: 1.5px solid #0d9488 !important;
-            border-radius: 10px !important;
+            background: var(--glass-bg-strong) !important;
+            color: var(--glass-accent-strong) !important;
+            border: 1px solid rgba(20, 184, 166, 0.28) !important;
+            border-radius: 16px !important;
+            backdrop-filter: var(--glass-blur) !important;
+            -webkit-backdrop-filter: var(--glass-blur) !important;
             font-weight: 600 !important;
+            box-shadow: var(--glass-shadow-soft) !important;
         }
 
         /* ── Item card ── */
         .item-card {
-            background: #ffffff;
-            border: 1px solid #e2e8f0;
-            border-radius: 14px;
+            background: var(--glass-bg) !important;
+            border: 1px solid var(--glass-stroke) !important;
+            backdrop-filter: var(--glass-blur) !important;
+            -webkit-backdrop-filter: var(--glass-blur) !important;
+            border-radius: 22px;
             padding: 1rem 1.1rem;
             margin-bottom: 0.8rem;
-            box-shadow: 0 1px 3px rgba(15,23,42,0.06);
+            box-shadow: var(--glass-shadow);
         }
-        .item-name { color: #0f172a; font-size: 1rem; font-weight: 700; margin-bottom: 0.15rem; }
-        .item-desc { color: #64748b; font-size: 0.85rem; margin-bottom: 0.65rem; line-height: 1.5; }
+        .item-name { color: var(--glass-text); font-size: 1rem; font-weight: 700; margin-bottom: 0.15rem; }
+        .item-desc { color: var(--glass-muted); font-size: 0.85rem; margin-bottom: 0.65rem; line-height: 1.5; }
         .pill-row  { display: flex; flex-wrap: wrap; gap: 0.35rem; }
-        .pill      { display: inline-block; padding: 0.18rem 0.55rem; border-radius: 999px; font-size: 0.73rem; font-weight: 600; }
-        .p-neutral { background: #f1f5f9; color: #475569; }
-        .p-ok      { background: #dcfce7; color: #15803d; }
-        .p-low     { background: #ffedd5; color: #c2410c; }
-        .p-zero    { background: #fee2e2; color: #b91c1c; }
+        .pill      { display: inline-block; padding: 0.22rem 0.62rem; border-radius: 999px; font-size: 0.73rem; font-weight: 700; border: 1px solid rgba(255,255,255,0.28); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+        .p-neutral { background: rgba(255, 255, 255, 0.30); color: #475569; }
+        .p-ok      { background: rgba(34, 197, 94, 0.18); color: #166534; }
+        .p-low     { background: rgba(249, 115, 22, 0.18); color: #9a3412; }
+        .p-zero    { background: rgba(239, 68, 68, 0.18); color: #991b1b; }
 
         /* ── Metric card ── */
         .metrics-grid {
@@ -448,11 +528,13 @@ def inject_theme():
             margin-bottom: 1.2rem;
         }
         .metric-card {
-            background: #ffffff;
-            border: 1px solid #e2e8f0;
-            border-radius: 16px;
+            background: var(--glass-bg) !important;
+            border: 1px solid var(--glass-stroke) !important;
+            border-radius: 22px;
+            backdrop-filter: var(--glass-blur) !important;
+            -webkit-backdrop-filter: var(--glass-blur) !important;
             padding: 1.3rem 1.4rem;
-            box-shadow: 0 2px 8px rgba(15,23,42,0.07);
+            box-shadow: var(--glass-shadow);
             display: flex;
             flex-direction: column;
             gap: 0.35rem;
@@ -463,8 +545,8 @@ def inject_theme():
         .metric-card.mc-issued { border-left: 4px solid #6366f1; }
         .metric-card.mc-deposit{ border-left: 4px solid #0ea5e9; }
         .metric-icon  { font-size: 1.4rem; line-height: 1; }
-        .metric-label { color: #94a3b8; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.09em; }
-        .metric-value { color: #0f172a; font-size: 2rem; font-weight: 800; line-height: 1; }
+        .metric-label { color: #64748b; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.09em; }
+        .metric-value { color: var(--glass-text); font-size: 2rem; font-weight: 800; line-height: 1; }
         .m-accent { color: #0d9488 !important; }
         .m-warn   { color: #ea580c !important; }
         .m-danger { color: #dc2626 !important; }
@@ -473,9 +555,11 @@ def inject_theme():
 
         /* ── Low-stock banner ── */
         .low-stock-banner {
-            background: #fff7ed;
-            border: 1.5px solid #fb923c;
-            border-radius: 10px;
+            background: rgba(255, 237, 213, 0.50);
+            border: 1px solid rgba(251, 146, 60, 0.45);
+            border-radius: 18px;
+            backdrop-filter: var(--glass-blur);
+            -webkit-backdrop-filter: var(--glass-blur);
             padding: 0.55rem 1rem;
             margin-bottom: 0.8rem;
             display: flex;
@@ -484,9 +568,10 @@ def inject_theme():
             font-size: 0.9rem;
             font-weight: 700;
             color: #c2410c;
+            box-shadow: var(--glass-shadow-soft);
         }
         .section-label {
-            color: #94a3b8;
+            color: #64748b;
             font-size: 0.72rem;
             font-weight: 700;
             text-transform: uppercase;
@@ -500,38 +585,42 @@ def inject_theme():
             margin-bottom: 0.8rem;
         }
         .brand-title {
-            color: #0f172a;
+            color: var(--glass-text);
             font-size: 1.7rem;
             font-weight: 800;
             line-height: 1.1;
+            text-shadow: 0 1px 0 rgba(255,255,255,0.35);
         }
         .brand-subtitle {
-            color: #64748b;
+            color: var(--glass-muted);
             font-size: 0.9rem;
             font-weight: 600;
             line-height: 1.3;
         }
         .role-card {
-            border: 1px solid #dbe3ee;
-            border-radius: 14px;
+            border: 1px solid var(--glass-stroke);
+            border-radius: 20px;
             padding: 0.9rem 0.9rem 0.8rem 0.9rem;
-            background: #ffffff;
+            background: var(--glass-bg);
+            backdrop-filter: var(--glass-blur);
+            -webkit-backdrop-filter: var(--glass-blur);
             min-height: 132px;
             margin-bottom: 0.45rem;
+            box-shadow: var(--glass-shadow-soft);
         }
         .role-card-active {
-            border-color: #0d9488;
-            box-shadow: 0 0 0 2px rgba(13,148,136,0.12);
-            background: #f0fdfa;
+            border-color: rgba(20, 184, 166, 0.42);
+            box-shadow: 0 0 0 1px rgba(20,184,166,0.12), 0 16px 30px rgba(13,148,136,0.14);
+            background: rgba(240, 253, 250, 0.34);
         }
         .role-card-title {
-            color: #0f172a;
+            color: var(--glass-text);
             font-size: 1rem;
             font-weight: 800;
             margin-bottom: 0.2rem;
         }
         .role-card-copy {
-            color: #475569;
+            color: var(--glass-muted);
             font-size: 0.82rem;
             line-height: 1.35;
         }
@@ -540,8 +629,9 @@ def inject_theme():
             margin-top: 0.5rem;
             padding: 0.2rem 0.55rem;
             border-radius: 999px;
-            background: #e2e8f0;
+            background: rgba(255, 255, 255, 0.30);
             color: #334155;
+            border: 1px solid rgba(255,255,255,0.28);
             font-size: 0.72rem;
             font-weight: 700;
             text-transform: uppercase;
@@ -553,18 +643,57 @@ def inject_theme():
 
         /* ── Form container ── */
         div[data-testid="stForm"] {
-            border-radius: 14px !important;
+            background: var(--glass-bg) !important;
+            border: 1px solid var(--glass-stroke) !important;
+            border-radius: 22px !important;
             padding: 1rem !important;
+            backdrop-filter: var(--glass-blur) !important;
+            -webkit-backdrop-filter: var(--glass-blur) !important;
+            box-shadow: var(--glass-shadow-soft) !important;
         }
 
         /* ── Checkbox ── */
-        .stCheckbox [data-baseweb="checkbox"] > div { border-color: #cbd5e1 !important; }
+        .stCheckbox [data-baseweb="checkbox"] > div {
+            border-color: rgba(148, 163, 184, 0.55) !important;
+            background: rgba(255,255,255,0.22) !important;
+        }
+
+        /* ── Dataframes / tables ── */
+        div[data-testid="stDataFrame"],
+        div[data-testid="stTable"] {
+            background: var(--glass-bg) !important;
+            border: 1px solid var(--glass-stroke) !important;
+            border-radius: 22px !important;
+            backdrop-filter: var(--glass-blur) !important;
+            -webkit-backdrop-filter: var(--glass-blur) !important;
+            box-shadow: var(--glass-shadow) !important;
+            overflow: hidden !important;
+        }
+        div[data-testid="stDataFrame"] [role="grid"],
+        div[data-testid="stDataFrame"] [data-testid="stDataFrameResizable"],
+        div[data-testid="stDataFrame"] [data-testid="stDataFrameGlideDataEditor"] {
+            background: transparent !important;
+        }
+        div[data-testid="stDataFrame"] [role="columnheader"],
+        div[data-testid="stDataFrame"] [role="gridcell"] {
+            background: rgba(255,255,255,0.10) !important;
+        }
+
+        /* ── Dialogs / containers ── */
+        div[role="dialog"] > div {
+            background: rgba(255,255,255,0.34) !important;
+            border: 1px solid var(--glass-stroke) !important;
+            border-radius: 24px !important;
+            backdrop-filter: blur(22px) !important;
+            -webkit-backdrop-filter: blur(22px) !important;
+            box-shadow: 0 24px 60px rgba(15,23,42,0.18) !important;
+        }
 
         /* ── Status messages ── */
-        div.stSuccess > div { background: #f0fdf4 !important; color: #15803d !important; border: 1px solid #bbf7d0 !important; border-radius: 10px !important; }
-        div.stError > div   { background: #fef2f2 !important; color: #dc2626 !important; border: 1px solid #fecaca !important; border-radius: 10px !important; }
-        div.stWarning > div { background: #fffbeb !important; color: #d97706 !important; border: 1px solid #fde68a !important; border-radius: 10px !important; }
-        div.stInfo > div    { background: #eff6ff !important; color: #2563eb !important; border: 1px solid #bfdbfe !important; border-radius: 10px !important; }
+        div.stSuccess > div { background: rgba(220, 252, 231, 0.52) !important; color: #166534 !important; border: 1px solid rgba(34, 197, 94, 0.28) !important; border-radius: 18px !important; backdrop-filter: var(--glass-blur) !important; -webkit-backdrop-filter: var(--glass-blur) !important; }
+        div.stError > div   { background: rgba(254, 226, 226, 0.52) !important; color: #b91c1c !important; border: 1px solid rgba(239, 68, 68, 0.24) !important; border-radius: 18px !important; backdrop-filter: var(--glass-blur) !important; -webkit-backdrop-filter: var(--glass-blur) !important; }
+        div.stWarning > div { background: rgba(254, 243, 199, 0.52) !important; color: #b45309 !important; border: 1px solid rgba(245, 158, 11, 0.24) !important; border-radius: 18px !important; backdrop-filter: var(--glass-blur) !important; -webkit-backdrop-filter: var(--glass-blur) !important; }
+        div.stInfo > div    { background: rgba(219, 234, 254, 0.52) !important; color: #1d4ed8 !important; border: 1px solid rgba(59, 130, 246, 0.24) !important; border-radius: 18px !important; backdrop-filter: var(--glass-blur) !important; -webkit-backdrop-filter: var(--glass-blur) !important; }
 
         /* ── Mobile tweaks ── */
         @media (max-width: 640px) {
@@ -1694,14 +1823,14 @@ def history_page(conn):
         if row.get("tx_type") == "return":
             return "Returned"
         if row.get("tx_type") == "issue" and row.get("returnable"):
-            return "Returned" if row.get("returned_at") else "Pending Return"
+            return "Pending Return" if not row.get("returned_at") else ""
         return ""
 
     df["return_status"] = df.apply(_return_status, axis=1)
 
     display_cols = [
         c for c in ["created_at", "tx_type", "return_status", "part_name", "qty", "unit",
-                     "performed_by", "machine_sn", "purpose", "returnable", "returned_at",
+                     "performed_by", "machine_sn", "purpose", "returnable",
                      "prev_stock", "balance_stock", "note"]
         if c in df.columns
     ]
@@ -1733,6 +1862,46 @@ def alerts_page(conn):
             """,
             unsafe_allow_html=True,
         )
+
+
+def render_main_navigation(options, key):
+    default_option = st.session_state.get(key, options[0])
+    if default_option not in options:
+        default_option = options[0]
+
+    if hasattr(st, "pills"):
+        selected_option = st.pills(
+            "Section",
+            options,
+            selection_mode="single",
+            default=default_option,
+            required=True,
+            key=key,
+            label_visibility="collapsed",
+            width="stretch",
+        )
+        return selected_option or default_option
+
+    return st.selectbox(
+        "Section",
+        options,
+        index=options.index(default_option),
+        key=key,
+        label_visibility="collapsed",
+    )
+
+
+def clear_inactive_page_state(active_section):
+    if active_section != "⬆ Pick":
+        for key in ["pick_done", "pick_selected_id", "pick_animation_shown", "pick_dialog_part_id"]:
+            st.session_state.pop(key, None)
+    if active_section != "📥 Inward":
+        for key in ["deposit_done", "deposit_animation_shown", "deposit_dialog_part_id"]:
+            st.session_state.pop(key, None)
+    if active_section != "↩ Returnables":
+        st.session_state.pop("return_dialog_issue_id", None)
+    if active_section != "📦 Items":
+        st.session_state.pop("items_dialog_part_id", None)
 
 
 def main():
@@ -1774,40 +1943,41 @@ def main():
             unsafe_allow_html=True,
         )
 
-    # tab navigation
+    # controlled navigation: render only the active section so transient state
+    # does not persist after users switch away and come back.
     if role == "manager":
-        tab_labels = ["📦 Items", "⬆ Pick", "📥 Inward", "↩ Returnables", "🗂 Master", "📊 Dashboard", "📋 History", "🔔 Alerts"]
-        tabs = st.tabs(tab_labels)
-        tab_items, tab_pick, tab_deposit, tab_returnables, tab_im, tab_dash, tab_hist, tab_alert = tabs
+        nav_options = ["📦 Items", "⬆ Pick", "📥 Inward", "↩ Returnables", "🗂 Master", "📊 Dashboard", "📋 History", "🔔 Alerts"]
+        active_section = render_main_navigation(nav_options, "main_nav_manager")
+        clear_inactive_page_state(active_section)
 
-        with tab_items:
+        if active_section == "📦 Items":
             items_page(conn)
-        with tab_pick:
+        elif active_section == "⬆ Pick":
             pick_material_page(conn)
-        with tab_deposit:
+        elif active_section == "📥 Inward":
             deposit_stock_page(conn)
-        with tab_returnables:
+        elif active_section == "↩ Returnables":
             returnables_page(conn)
-        with tab_im:
+        elif active_section == "🗂 Master":
             item_master_page(conn)
-        with tab_dash:
+        elif active_section == "📊 Dashboard":
             dashboard_page(conn)
-        with tab_hist:
+        elif active_section == "📋 History":
             history_page(conn)
-        with tab_alert:
+        else:
             alerts_page(conn)
     else:
-        tab_labels = ["📦 Items", "⬆ Pick", "📋 History", "🔔 Alerts"]
-        tabs = st.tabs(tab_labels)
-        tab_items, tab_pick, tab_hist, tab_alert = tabs
+        nav_options = ["📦 Items", "⬆ Pick", "📋 History", "🔔 Alerts"]
+        active_section = render_main_navigation(nav_options, "main_nav_user")
+        clear_inactive_page_state(active_section)
 
-        with tab_items:
+        if active_section == "📦 Items":
             items_page(conn)
-        with tab_pick:
+        elif active_section == "⬆ Pick":
             pick_material_page(conn)
-        with tab_hist:
+        elif active_section == "📋 History":
             history_page(conn)
-        with tab_alert:
+        else:
             alerts_page(conn)
 
     # render faint version/timestamp stamp so users can confirm deployed build
