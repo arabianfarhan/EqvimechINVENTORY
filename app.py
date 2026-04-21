@@ -900,11 +900,11 @@ def show_pick_dialog(conn):
     )
 
     st.markdown('<div style="margin-top:.5rem;font-weight:700">Purpose / Usage *</div>', unsafe_allow_html=True)
-    purpose_colors = {
-        "Assembly": "#ef4444",
-        "Checking": "#f97316",
-        "Testing": "#06b6d4",
-        "Other": "#9ca3af",
+    purpose_labels = {
+        "Assembly": "🟥 Assembly",
+        "Checking": "🟧 Checking",
+        "Testing": "🟦 Testing",
+        "Other": "⬜ Other",
     }
     purpose_keys = {
         "Assembly": f"pick_purpose_assembly_{part_id}",
@@ -918,17 +918,10 @@ def show_pick_dialog(conn):
         purpose_cols = st.columns(2)
         for index, purpose_name in enumerate(row):
             with purpose_cols[index]:
-                purpose_inner_cols = st.columns([0.18, 0.82])
-                with purpose_inner_cols[0]:
-                    purpose_values[purpose_name] = st.checkbox(
-                        "",
-                        key=purpose_keys[purpose_name],
-                    )
-                with purpose_inner_cols[1]:
-                    st.markdown(
-                        f"<div style='display:inline-block;padding:.35rem .6rem;border-radius:999px;background:{purpose_colors[purpose_name]};color:#fff;font-weight:700'>{purpose_name}</div>",
-                        unsafe_allow_html=True,
-                    )
+                purpose_values[purpose_name] = st.checkbox(
+                    purpose_labels[purpose_name],
+                    key=purpose_keys[purpose_name],
+                )
     assembly = purpose_values["Assembly"]
     checking = purpose_values["Checking"]
     testing = purpose_values["Testing"]
@@ -954,19 +947,19 @@ def show_pick_dialog(conn):
             unsafe_allow_html=True,
         )
 
-    # User Name selection: show colored name badges in a compact 4x2 grid with a small checkbox beside each
+    # User Name selection: flat 2-column grid to stay compact on mobile
     st.markdown('<div style="margin-top:.6rem;font-weight:700">User Name</div>', unsafe_allow_html=True)
-    name_colors = {
-        "Ravi": "#ef4444",
-        "Shani": "#f97316",
-        "Suraj": "#f59e0b",
-        "Mangesh": "#84cc16",
-        "Ram": "#10b981",
-        "Sonu": "#06b6d4",
-        "Sandip": "#6366f1",
-        "Other": "#9ca3af",
+    name_labels = {
+        "Ravi": "🟥 Ravi",
+        "Shani": "🟧 Shani",
+        "Suraj": "🟨 Suraj",
+        "Mangesh": "🟩 Mangesh",
+        "Ram": "🟢 Ram",
+        "Sonu": "🔵 Sonu",
+        "Sandip": "🟣 Sandip",
+        "Other": "⬜ Other",
     }
-    names = list(name_colors.keys())
+    names = list(name_labels.keys())
 
     selected_key = f"pick_selected_user_{part_id}"
     if selected_key not in st.session_state:
@@ -986,21 +979,14 @@ def show_pick_dialog(conn):
 
         return _cb
 
-    cols_per_row = 4
+    cols_per_row = 2
     for i in range(0, len(names), cols_per_row):
         row = names[i : i + cols_per_row]
         cols_row = st.columns(len(row))
         for j, n in enumerate(row):
             key = f"pick_user_chk_{part_id}_{n}"
-            badge_html = (
-                f"<div style='display:inline-block;padding:.35rem .6rem;border-radius:999px;background:{name_colors[n]};color:#fff;font-weight:700'>{n}</div>"
-            )
             with cols_row[j]:
-                subcols = st.columns([0.14, 0.86])
-                with subcols[0]:
-                    st.checkbox("", key=key, on_change=_make_user_cb(key, n))
-                with subcols[1]:
-                    st.markdown(badge_html, unsafe_allow_html=True)
+                st.checkbox(name_labels[n], key=key, on_change=_make_user_cb(key, n))
 
     selected_user = st.session_state.get(selected_key, "")
     if selected_user == "Other":
