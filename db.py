@@ -48,17 +48,21 @@ def get_conn():
     from urllib.parse import urlparse, unquote
     parsed = urlparse(url)
     
-    conn = psycopg2.connect(
-        host=parsed.hostname,
-        port=parsed.port or 5432,
-        database=parsed.path.lstrip("/"),
-        user=parsed.username,
-        password=unquote(parsed.password) if parsed.password else None,
-        sslmode='require',
-        cursor_factory=psycopg2.extras.RealDictCursor
-    )
-    conn.autocommit = False
-    return conn
+    try:
+        conn = psycopg2.connect(
+            host=parsed.hostname,
+            port=parsed.port or 5432,
+            database=parsed.path.lstrip("/"),
+            user=parsed.username,
+            password=unquote(parsed.password) if parsed.password else None,
+            sslmode='require',
+            cursor_factory=psycopg2.extras.RealDictCursor
+        )
+        conn.autocommit = False
+        return conn
+    except psycopg2.OperationalError as e:
+        print(f"Database connection failed: {e}")
+        raise
 
 
 def init_db(conn):
