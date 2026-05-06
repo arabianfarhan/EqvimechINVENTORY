@@ -54,6 +54,7 @@ def get_conn():
         database=parsed.path.lstrip("/"),
         user=parsed.username,
         password=unquote(parsed.password) if parsed.password else None,
+        sslmode='require',
         cursor_factory=psycopg2.extras.RealDictCursor
     )
     conn.autocommit = False
