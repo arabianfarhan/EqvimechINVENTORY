@@ -61,8 +61,20 @@ def get_conn():
         conn.autocommit = False
         return conn
     except psycopg2.OperationalError as e:
-        print(f"Database connection failed: {e}")
-        raise
+        err = str(e).lower()
+        if "password" in err or "authentication" in err:
+            hint = "AUTH_FAILED: Wrong username or password."
+        elif "timeout" in err or "could not connect" in err or "connection refused" in err:
+            hint = "TIMEOUT: Cannot reach database host. Check pooler URL and port."
+        elif "does not exist" in err:
+            hint = "DB_NOT_FOUND: Database name is wrong."
+        elif "ssl" in err:
+            hint = "SSL_ERROR: SSL connection issue."
+        else:
+            hint = f"UNKNOWN_ERROR: {type(e).__name__}"
+        raise RuntimeError(
+            f"DB connection failed [{hint}] | host={parsed.hostname} port={parsed.port} user={parsed.username} db={parsed.path.lstrip('/')}"
+        ) from None
 
 
 def init_db(conn):
