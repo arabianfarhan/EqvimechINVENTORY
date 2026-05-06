@@ -883,12 +883,11 @@ def sidebar_identity(conn):
         if st.button("Reset app (permanent)", key="reset_app", type="primary"):
             if reset_code == "611881":
                 try:
-                    # Close current DB handle, mark next startup as empty, then wipe DB file.
-                    conn.close()
-                    with open(RESET_EMPTY_MARKER, "w", encoding="utf-8"):
-                        pass
-                    if os.path.exists(DB_PATH):
-                        os.remove(DB_PATH)
+                    # Wipe all data from the database tables.
+                    reset_c = conn.cursor()
+                    reset_c.execute("DELETE FROM transactions")
+                    reset_c.execute("DELETE FROM parts")
+                    conn.commit()
                     if os.path.exists(ITEMS_SNAPSHOT_CSV_PATH):
                         os.remove(ITEMS_SNAPSHOT_CSV_PATH)
 

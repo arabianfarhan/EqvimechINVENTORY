@@ -1,9 +1,18 @@
 import csv
 import difflib
 import os
-import sqlite3
 
-DB_PATH = "inventory.db"
+import psycopg2
+import psycopg2.extras
+
+# ---------------------------------------------------------------------------
+# Database backend: PostgreSQL via Supabase (or any Postgres host).
+# Set DATABASE_URL in Streamlit secrets (.streamlit/secrets.toml) or as an
+# environment variable.  Format:
+#   postgresql://USER:PASSWORD@HOST:PORT/DBNAME
+# ---------------------------------------------------------------------------
+
+DB_PATH = "inventory.db"  # kept for legacy references in app.py; not used
 ITEMS_SNAPSHOT_CSV_PATH = "items_master_live.csv"
 CATEGORY_OPTIONS = ("Hardware", "Electronics", "Metals", "Others")
 DEFAULT_SAMPLE_PART_IDS = {
@@ -15,9 +24,43 @@ DEFAULT_SAMPLE_PART_IDS = {
 }
 
 
+def _get_database_url():
+    # Prefer Streamlit secrets, fall back to env var
+    try:
+        import streamlit as st
+        url = st.secrets.get("DATABASE_URL") or st.secrets.get("database", {}).get("url")
+        if url:
+            return url
+    except Exception:
+        pass
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        raise RuntimeError(
+            "DATABASE_URL not set. Add it to .streamlit/secrets.toml or as an environment variable."
+        )
+    return url
+
+
 def get_conn():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
+    url = _get_database_url()
+    # Parse connection string manually to avoid special character issues
+    # Format: postgresql://user:password@host:port/database
+    try:
+        # Try direct DSN first
+        conn = psycopg2.connect(url, cursor_factory=psycopg2.extras.RealDictCursor)
+    except psycopg2.OperationalError:
+        # If DSN fails, parse and use keyword args (handles special chars better)
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        conn = psycopg2.connect(
+            host=parsed.hostname,
+            port=parsed.port or 5432,
+            database=parsed.path.lstrip("/"),
+            user=parsed.username,
+            password=parsed.password,
+            cursor_factory=psycopg2.extras.RealDictCursor
+        )
+    conn.autocommit = False
     return conn
 
 
@@ -26,7 +69,7 @@ def init_db(conn):
     c.execute(
         """
         CREATE TABLE IF NOT EXISTS parts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             part_id TEXT UNIQUE,
             name TEXT,
             description TEXT,
@@ -36,15 +79,15 @@ def init_db(conn):
             min_level INTEGER DEFAULT 0,
             reorder_qty INTEGER DEFAULT 0,
             active INTEGER DEFAULT 1,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
         )
         """
     )
     c.execute(
         """
         CREATE TABLE IF NOT EXISTS transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             tx_type TEXT DEFAULT 'issue',
             part_id TEXT,
             part_name TEXT,
@@ -57,15 +100,21 @@ def init_db(conn):
             note TEXT DEFAULT '',
             prev_stock INTEGER DEFAULT 0,
             balance_stock INTEGER DEFAULT 0,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMPTZ DEFAULT NOW()
         )
         """
     )
     conn.commit()
     ensure_columns(conn)
-    c.execute("CREATE INDEX IF NOT EXISTS idx_transactions_part_id ON transactions(part_id)")
-    c.execute("CREATE INDEX IF NOT EXISTS idx_transactions_machine_sn ON transactions(machine_sn)")
-    c.execute("CREATE INDEX IF NOT EXISTS idx_transactions_created_at ON transactions(created_at)")
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_transactions_part_id ON transactions(part_id)"
+    )
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_transactions_machine_sn ON transactions(machine_sn)"
+    )
+    c.execute(
+        "CREATE INDEX IF NOT EXISTS idx_transactions_created_at ON transactions(created_at)"
+    )
     conn.commit()
 
 
@@ -81,8 +130,8 @@ def ensure_columns(conn):
             "min_level": "INTEGER DEFAULT 0",
             "reorder_qty": "INTEGER DEFAULT 0",
             "active": "INTEGER DEFAULT 1",
-            "created_at": "TEXT",
-            "updated_at": "TEXT",
+            "created_at": "TIMESTAMPTZ",
+            "updated_at": "TIMESTAMPTZ",
         },
     )
     ensure_table_columns(
@@ -99,23 +148,27 @@ def ensure_columns(conn):
             "note": "TEXT DEFAULT ''",
             "prev_stock": "INTEGER DEFAULT 0",
             "balance_stock": "INTEGER DEFAULT 0",
-            "created_at": "TEXT",
+            "created_at": "TIMESTAMPTZ",
             "returnable": "INTEGER DEFAULT 0",
-            "returned_at": "TEXT",
+            "returned_at": "TIMESTAMPTZ",
             "returned_tx_id": "INTEGER DEFAULT 0",
             "source_tx_id": "INTEGER DEFAULT 0",
         },
     )
     c = conn.cursor()
-    c.execute("UPDATE parts SET created_at = COALESCE(created_at, CURRENT_TIMESTAMP)")
-    c.execute("UPDATE parts SET updated_at = COALESCE(updated_at, CURRENT_TIMESTAMP)")
-    c.execute("UPDATE transactions SET created_at = COALESCE(created_at, CURRENT_TIMESTAMP)")
+    c.execute("UPDATE parts SET created_at = COALESCE(created_at, NOW())")
+    c.execute("UPDATE parts SET updated_at = COALESCE(updated_at, NOW())")
+    c.execute("UPDATE transactions SET created_at = COALESCE(created_at, NOW())")
     conn.commit()
 
 
 def ensure_table_columns(conn, table_name, desired_columns):
     c = conn.cursor()
-    existing = {row[1] for row in c.execute(f"PRAGMA table_info({table_name})").fetchall()}
+    c.execute(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = %s",
+        (table_name,),
+    )
+    existing = {row["column_name"] for row in c.fetchall()}
     for column_name, sql_type in desired_columns.items():
         if column_name not in existing:
             c.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {sql_type}")
@@ -124,8 +177,8 @@ def ensure_table_columns(conn, table_name, desired_columns):
 
 def seed_sample_data(conn):
     c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM parts")
-    if c.fetchone()[0] == 0:
+    c.execute("SELECT COUNT(*) AS cnt FROM parts")
+    if c.fetchone()["cnt"] == 0:
         parts = [
             (
                 "Ballscrew-R25",
@@ -177,14 +230,16 @@ def seed_sample_data(conn):
                 1,
             ),
         ]
-        c.executemany(
-            """
-            INSERT INTO parts (
-                part_id, name, description, unit, quantity, location, min_level, reorder_qty, category, active
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            parts,
-        )
+        for p in parts:
+            c.execute(
+                """
+                INSERT INTO parts (
+                    part_id, name, description, unit, quantity, location, min_level, reorder_qty, category, active
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (part_id) DO NOTHING
+                """,
+                p,
+            )
         conn.commit()
 
 
@@ -202,7 +257,8 @@ def load_parts_from_snapshot_csv(csv_path=ITEMS_SNAPSHOT_CSV_PATH):
 
 def bootstrap_parts_catalog(conn, csv_path=ITEMS_SNAPSHOT_CSV_PATH):
     c = conn.cursor()
-    current_part_ids = [row[0] for row in c.execute("SELECT part_id FROM parts").fetchall()]
+    c.execute("SELECT part_id FROM parts")
+    current_part_ids = [row["part_id"] for row in c.fetchall()]
     current_count = len(current_part_ids)
 
     snapshot_records = load_parts_from_snapshot_csv(csv_path)
@@ -231,16 +287,18 @@ def get_parts(conn, query="", active_only=True):
     if active_only:
         sql += " AND active = 1"
     if query:
-        sql += " AND (part_id LIKE ? OR name LIKE ? OR description LIKE ? OR location LIKE ?)"
+        sql += " AND (part_id LIKE %s OR name ILIKE %s OR description ILIKE %s OR location ILIKE %s)"
         like_query = f"%{query}%"
         params.extend([like_query, like_query, like_query, like_query])
     sql += " ORDER BY name"
-    return c.execute(sql, params).fetchall()
+    c.execute(sql, params)
+    return c.fetchall()
 
 
 def get_part(conn, part_id):
     c = conn.cursor()
-    return c.execute("SELECT * FROM parts WHERE part_id = ?", (part_id,)).fetchone()
+    c.execute("SELECT * FROM parts WHERE part_id = %s", (part_id,))
+    return c.fetchone()
 
 
 def sync_parts_snapshot_csv(conn, active_only=False):
@@ -253,7 +311,8 @@ def sync_parts_snapshot_csv(conn, active_only=False):
     if active_only:
         sql += " WHERE active = 1"
     sql += " ORDER BY name, part_id"
-    rows = c.execute(sql, params).fetchall()
+    c.execute(sql, params if params else None)
+    rows = c.fetchall()
 
     fieldnames = [
         "item_code", "name", "description", "unit", "quantity",
@@ -263,13 +322,7 @@ def sync_parts_snapshot_csv(conn, active_only=False):
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
-            # sqlite3.Row does not implement .get(), so access safely
-            try:
-                category = row["category"]
-            except Exception:
-                category = None
-            if category is None:
-                category = "Others"
+            category = (row.get("category") or "").strip() or "Others"
             writer.writerow(
                 {
                     "item_code": row["part_id"],
@@ -293,9 +346,9 @@ def save_part(conn, part_data):
         c.execute(
             """
             UPDATE parts
-            SET name = ?, description = ?, unit = ?, quantity = ?, location = ?,
-                min_level = ?, reorder_qty = ?, category = ?, active = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE part_id = ?
+            SET name = %s, description = %s, unit = %s, quantity = %s, location = %s,
+                min_level = %s, reorder_qty = %s, category = %s, active = %s, updated_at = NOW()
+            WHERE part_id = %s
             """,
             (
                 part_data["name"],
@@ -315,7 +368,7 @@ def save_part(conn, part_data):
             """
             INSERT INTO parts (
                 part_id, name, description, unit, quantity, location, min_level, reorder_qty, category, active
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 part_data["part_id"],
@@ -372,7 +425,8 @@ def _coerce_active_flag(value):
 
 def save_master_table(conn, rows):
     c = conn.cursor()
-    existing_rows = c.execute("SELECT id, part_id FROM parts ORDER BY id").fetchall()
+    c.execute("SELECT id, part_id FROM parts ORDER BY id")
+    existing_rows = c.fetchall()
     existing_by_id = {int(row["id"]): row for row in existing_rows}
 
     prepared_existing = []
@@ -439,7 +493,7 @@ def save_master_table(conn, rows):
         for payload in prepared_existing:
             if payload["part_id"] != payload["current_part_id"]:
                 c.execute(
-                    "UPDATE parts SET part_id = ? WHERE id = ?",
+                    "UPDATE parts SET part_id = %s WHERE id = %s",
                     (f"__tmp__{payload['id']}__", payload["id"]),
                 )
 
@@ -447,9 +501,9 @@ def save_master_table(conn, rows):
             c.execute(
                 """
                 UPDATE parts
-                SET part_id = ?, name = ?, description = ?, unit = ?, quantity = ?, location = ?,
-                    min_level = ?, reorder_qty = ?, category = ?, active = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
+                SET part_id = %s, name = %s, description = %s, unit = %s, quantity = %s, location = %s,
+                    min_level = %s, reorder_qty = %s, category = %s, active = %s, updated_at = NOW()
+                WHERE id = %s
                 """,
                 (
                     payload["part_id"],
@@ -471,7 +525,7 @@ def save_master_table(conn, rows):
                 """
                 INSERT INTO parts (
                     part_id, name, description, unit, quantity, location, min_level, reorder_qty, category, active
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     payload["part_id"],
@@ -490,7 +544,7 @@ def save_master_table(conn, rows):
         conn.commit()
         sync_parts_snapshot_csv(conn)
         return {"updated": len(prepared_existing), "inserted": len(prepared_new)}
-    except sqlite3.IntegrityError as exc:
+    except psycopg2.IntegrityError as exc:
         conn.rollback()
         raise ValueError(f"Save failed due to a duplicate item code: {exc}")
     except Exception:
@@ -532,7 +586,7 @@ def pick_material(conn, part_id, machine_serials, qty, performed_by, performed_r
             INSERT INTO transactions (
                 tx_type, part_id, part_name, qty, unit, performed_by, performed_role,
                 machine_sn, purpose, note, prev_stock, balance_stock, returnable
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 "issue",
@@ -551,7 +605,7 @@ def pick_material(conn, part_id, machine_serials, qty, performed_by, performed_r
             ),
         )
         c.execute(
-            "UPDATE parts SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE part_id = ?",
+            "UPDATE parts SET quantity = %s, updated_at = NOW() WHERE part_id = %s",
             (running_balance, part_id),
         )
         conn.commit()
@@ -575,7 +629,7 @@ def deposit_stock(conn, part_id, qty, performed_by, performed_role, note=""):
     try:
         c.execute("BEGIN")
         c.execute(
-            "UPDATE parts SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE part_id = ?",
+            "UPDATE parts SET quantity = %s, updated_at = NOW() WHERE part_id = %s",
             (balance_stock, part_id),
         )
         c.execute(
@@ -583,7 +637,7 @@ def deposit_stock(conn, part_id, qty, performed_by, performed_role, note=""):
             INSERT INTO transactions (
                 tx_type, part_id, part_name, qty, unit, performed_by, performed_role,
                 machine_sn, purpose, note, prev_stock, balance_stock
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 "deposit",
@@ -613,7 +667,8 @@ def return_issue_material(conn, issue_tx_id, performed_by, performed_role, note=
     if (performed_role or "").strip().lower() != "manager":
         raise ValueError("Only managers can return material")
 
-    issue = c.execute("SELECT * FROM transactions WHERE id = ?", (issue_tx_id,)).fetchone()
+    c.execute("SELECT * FROM transactions WHERE id = %s", (issue_tx_id,))
+    issue = c.fetchone()
     if issue is None:
         raise ValueError("Issue record not found")
     if issue["tx_type"] != "issue":
@@ -637,7 +692,7 @@ def return_issue_material(conn, issue_tx_id, performed_by, performed_role, note=
     try:
         c.execute("BEGIN")
         c.execute(
-            "UPDATE parts SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE part_id = ?",
+            "UPDATE parts SET quantity = %s, updated_at = NOW() WHERE part_id = %s",
             (balance_stock, issue["part_id"]),
         )
         c.execute(
@@ -645,7 +700,8 @@ def return_issue_material(conn, issue_tx_id, performed_by, performed_role, note=
             INSERT INTO transactions (
                 tx_type, part_id, part_name, qty, unit, performed_by, performed_role,
                 machine_sn, purpose, note, prev_stock, balance_stock, source_tx_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
             """,
             (
                 "return",
@@ -663,9 +719,9 @@ def return_issue_material(conn, issue_tx_id, performed_by, performed_role, note=
                 int(issue_tx_id),
             ),
         )
-        return_tx_id = c.lastrowid
+        return_tx_id = c.fetchone()["id"]
         c.execute(
-            "UPDATE transactions SET returned_at = CURRENT_TIMESTAMP, returned_tx_id = ? WHERE id = ?",
+            "UPDATE transactions SET returned_at = NOW(), returned_tx_id = %s WHERE id = %s",
             (return_tx_id, issue_tx_id),
         )
         conn.commit()
@@ -678,9 +734,8 @@ def return_issue_material(conn, issue_tx_id, performed_by, performed_role, note=
 
 def low_stock_alerts(conn):
     c = conn.cursor()
-    return c.execute(
-        "SELECT * FROM parts WHERE active = 1 AND quantity <= min_level ORDER BY quantity, name"
-    ).fetchall()
+    c.execute("SELECT * FROM parts WHERE active = 1 AND quantity <= min_level ORDER BY quantity, name")
+    return c.fetchall()
 
 
 def list_transactions(conn, tx_type="all", search="", performed_by=None, limit=250):
@@ -688,62 +743,65 @@ def list_transactions(conn, tx_type="all", search="", performed_by=None, limit=2
     sql = "SELECT * FROM transactions WHERE 1=1"
     params = []
     if tx_type != "all":
-        sql += " AND tx_type = ?"
+        sql += " AND tx_type = %s"
         params.append(tx_type)
     if performed_by:
-        sql += " AND performed_by = ?"
+        sql += " AND performed_by = %s"
         params.append(performed_by)
     if search:
-        sql += " AND (part_id LIKE ? OR part_name LIKE ? OR machine_sn LIKE ? OR purpose LIKE ? OR note LIKE ? OR performed_by LIKE ?)"
+        sql += " AND (part_id ILIKE %s OR part_name ILIKE %s OR machine_sn ILIKE %s OR purpose ILIKE %s OR note ILIKE %s OR performed_by ILIKE %s)"
         like_query = f"%{search}%"
         params.extend([like_query, like_query, like_query, like_query, like_query, like_query])
-    sql += " ORDER BY created_at DESC LIMIT ?"
+    sql += " ORDER BY created_at DESC LIMIT %s"
     params.append(limit)
-    return c.execute(sql, params).fetchall()
+    c.execute(sql, params)
+    return c.fetchall()
 
 
 def list_open_returnable_issues(conn, search="", performed_by=None, limit=200):
     c = conn.cursor()
     sql = (
         "SELECT * FROM transactions "
-        "WHERE tx_type = 'issue' AND returnable = 1 AND COALESCE(returned_at, '') = ''"
+        "WHERE tx_type = 'issue' AND returnable = 1 AND returned_at IS NULL"
     )
     params = []
     if performed_by:
-        sql += " AND performed_by = ?"
+        sql += " AND performed_by = %s"
         params.append(performed_by)
     if search:
         sql += (
-            " AND (part_id LIKE ? OR part_name LIKE ? OR machine_sn LIKE ? "
-            "OR purpose LIKE ? OR note LIKE ? OR performed_by LIKE ?)"
+            " AND (part_id ILIKE %s OR part_name ILIKE %s OR machine_sn ILIKE %s "
+            "OR purpose ILIKE %s OR note ILIKE %s OR performed_by ILIKE %s)"
         )
         like_query = f"%{search}%"
         params.extend([like_query, like_query, like_query, like_query, like_query, like_query])
-    sql += " ORDER BY created_at DESC LIMIT ?"
+    sql += " ORDER BY created_at DESC LIMIT %s"
     params.append(limit)
-    return c.execute(sql, params).fetchall()
+    c.execute(sql, params)
+    return c.fetchall()
 
 
 def list_returned_returnable_issues(conn, search="", performed_by=None, limit=200):
     c = conn.cursor()
     sql = (
         "SELECT * FROM transactions "
-        "WHERE tx_type = 'issue' AND returnable = 1 AND COALESCE(returned_at, '') <> ''"
+        "WHERE tx_type = 'issue' AND returnable = 1 AND returned_at IS NOT NULL"
     )
     params = []
     if performed_by:
-        sql += " AND performed_by = ?"
+        sql += " AND performed_by = %s"
         params.append(performed_by)
     if search:
         sql += (
-            " AND (part_id LIKE ? OR part_name LIKE ? OR machine_sn LIKE ? "
-            "OR purpose LIKE ? OR note LIKE ? OR performed_by LIKE ?)"
+            " AND (part_id ILIKE %s OR part_name ILIKE %s OR machine_sn ILIKE %s "
+            "OR purpose ILIKE %s OR note ILIKE %s OR performed_by ILIKE %s)"
         )
         like_query = f"%{search}%"
         params.extend([like_query, like_query, like_query, like_query, like_query, like_query])
-    sql += " ORDER BY returned_at DESC, created_at DESC LIMIT ?"
+    sql += " ORDER BY returned_at DESC, created_at DESC LIMIT %s"
     params.append(limit)
-    return c.execute(sql, params).fetchall()
+    c.execute(sql, params)
+    return c.fetchall()
 
 
 def get_dashboard_metrics(conn):
@@ -758,23 +816,28 @@ def get_dashboard_metrics_with_category(conn, category=None):
     tx_where = ""
     tx_params = []
     if category and category != "All":
-        parts_where += " AND category = ?"
+        parts_where += " AND category = %s"
         parts_params.append(category)
-        tx_where = " AND part_id IN (SELECT part_id FROM parts WHERE category = ?)"
+        tx_where = " AND part_id IN (SELECT part_id FROM parts WHERE category = %s)"
         tx_params.append(category)
 
-    total_items = c.execute(f"SELECT COUNT(*) FROM parts {parts_where}", parts_params).fetchone()[0]
-    total_stock_units = c.execute(f"SELECT COALESCE(SUM(quantity), 0) FROM parts {parts_where}", parts_params).fetchone()[0]
-    low_stock_items = c.execute(f"SELECT COUNT(*) FROM parts {parts_where} AND quantity <= min_level", parts_params).fetchone()[0]
-    out_of_stock_items = c.execute(f"SELECT COUNT(*) FROM parts {parts_where} AND quantity = 0", parts_params).fetchone()[0]
-    issues_today = c.execute(
-        f"SELECT COALESCE(SUM(qty), 0) FROM transactions WHERE tx_type = 'issue' AND DATE(created_at) = DATE('now') {tx_where}",
+    def _scalar(sql, params):
+        c.execute(sql, params if params else None)
+        row = c.fetchone()
+        return list(row.values())[0] if row else 0
+
+    total_items = _scalar(f"SELECT COUNT(*) AS v FROM parts {parts_where}", parts_params)
+    total_stock_units = _scalar(f"SELECT COALESCE(SUM(quantity), 0) AS v FROM parts {parts_where}", parts_params)
+    low_stock_items = _scalar(f"SELECT COUNT(*) AS v FROM parts {parts_where} AND quantity <= min_level", parts_params)
+    out_of_stock_items = _scalar(f"SELECT COUNT(*) AS v FROM parts {parts_where} AND quantity = 0", parts_params)
+    issues_today = _scalar(
+        f"SELECT COALESCE(SUM(qty), 0) AS v FROM transactions WHERE tx_type = 'issue' AND created_at::date = CURRENT_DATE {tx_where}",
         tx_params,
-    ).fetchone()[0]
-    deposits_today = c.execute(
-        f"SELECT COALESCE(SUM(qty), 0) FROM transactions WHERE tx_type = 'deposit' AND DATE(created_at) = DATE('now') {tx_where}",
+    )
+    deposits_today = _scalar(
+        f"SELECT COALESCE(SUM(qty), 0) AS v FROM transactions WHERE tx_type = 'deposit' AND created_at::date = CURRENT_DATE {tx_where}",
         tx_params,
-    ).fetchone()[0]
+    )
 
     return {
         "total_items": total_items,
@@ -788,75 +851,79 @@ def get_dashboard_metrics_with_category(conn, category=None):
 
 def get_top_consumed_items(conn, limit=5):
     c = conn.cursor()
-    return c.execute(
+    c.execute(
         """
         SELECT part_id, part_name, SUM(qty) AS issued_qty
         FROM transactions
         WHERE tx_type = 'issue'
         GROUP BY part_id, part_name
         ORDER BY issued_qty DESC, part_name ASC
-        LIMIT ?
+        LIMIT %s
         """,
         (limit,),
-    ).fetchall()
+    )
+    return c.fetchall()
 
 
 def get_top_consumed_items_by_category(conn, category=None, limit=5):
     c = conn.cursor()
     if not category or category == "All":
         return get_top_consumed_items(conn, limit=limit)
-    return c.execute(
+    c.execute(
         """
         SELECT t.part_id, t.part_name, SUM(t.qty) AS issued_qty
         FROM transactions t
         JOIN parts p ON p.part_id = t.part_id
-        WHERE t.tx_type = 'issue' AND p.category = ?
+        WHERE t.tx_type = 'issue' AND p.category = %s
         GROUP BY t.part_id, t.part_name
         ORDER BY issued_qty DESC, t.part_name ASC
-        LIMIT ?
+        LIMIT %s
         """,
         (category, limit),
-    ).fetchall()
+    )
+    return c.fetchall()
 
 
 def get_machine_usage(conn, limit=10):
     c = conn.cursor()
-    return c.execute(
+    c.execute(
         """
         SELECT machine_sn, SUM(qty) AS issued_lines
         FROM transactions
         WHERE tx_type = 'issue' AND machine_sn <> ''
         GROUP BY machine_sn
         ORDER BY issued_lines DESC, machine_sn ASC
-        LIMIT ?
+        LIMIT %s
         """,
         (limit,),
-    ).fetchall()
+    )
+    return c.fetchall()
 
 
 def get_machine_usage_by_category(conn, category=None, limit=10):
     c = conn.cursor()
     if not category or category == "All":
         return get_machine_usage(conn, limit=limit)
-    return c.execute(
+    c.execute(
         """
         SELECT t.machine_sn, SUM(t.qty) AS issued_lines
         FROM transactions t
         JOIN parts p ON p.part_id = t.part_id
-        WHERE t.tx_type = 'issue' AND t.machine_sn <> '' AND p.category = ?
+        WHERE t.tx_type = 'issue' AND t.machine_sn <> '' AND p.category = %s
         GROUP BY t.machine_sn
         ORDER BY issued_lines DESC, t.machine_sn ASC
-        LIMIT ?
+        LIMIT %s
         """,
         (category, limit),
-    ).fetchall()
+    )
+    return c.fetchall()
 
 
 def delete_part(conn, part_id):
     """Soft-delete: mark active=0 so history is preserved."""
     c = conn.cursor()
     c.execute(
-        "UPDATE parts SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE part_id = ?",
+        "UPDATE parts SET active = 0, updated_at = NOW() WHERE part_id = %s",
         (part_id,),
     )
     conn.commit()
@@ -1066,7 +1133,8 @@ def auto_classify_parts(conn, apply=False):
     If apply=False, returns preview list of suggested changes without committing.
     """
     c = conn.cursor()
-    rows = c.execute("SELECT part_id, name, description, category FROM parts").fetchall()
+    c.execute("SELECT part_id, name, description, category FROM parts")
+    rows = c.fetchall()
     suggestions = []
     changed_count = 0
     for row in rows:
@@ -1082,7 +1150,7 @@ def auto_classify_parts(conn, apply=False):
             "suggested": suggested,
         })
         if apply and suggested != current:
-            c.execute("UPDATE parts SET category = ?, updated_at = CURRENT_TIMESTAMP WHERE part_id = ?", (suggested, part_id))
+            c.execute("UPDATE parts SET category = %s, updated_at = NOW() WHERE part_id = %s", (suggested, part_id))
             changed_count += 1
     if apply:
         conn.commit()
@@ -1105,11 +1173,11 @@ def analyze_parts_import(conn, records):
         "total_rows": len(records),
     }
     seen_part_ids = set()
+    _c = conn.cursor()
+    _c.execute("SELECT part_id, name, description, unit, quantity, location, min_level, reorder_qty, active, category FROM parts")
     existing_payloads = [
         _payload_from_existing_row(row)
-        for row in conn.execute(
-            "SELECT part_id, name, description, unit, quantity, location, min_level, reorder_qty, active, category FROM parts"
-        ).fetchall()
+        for row in _c.fetchall()
     ]
     uploaded_payloads = []
 
