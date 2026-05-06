@@ -1933,7 +1933,11 @@ def clear_inactive_page_state(active_section):
 def main():
     inject_theme()
 
-    conn = get_conn()
+    try:
+        conn = get_conn()
+    except Exception as e:
+        st.error(f"**Database connection failed:** {e}")
+        st.stop()
     init_db(conn)
     if os.path.exists(RESET_EMPTY_MARKER):
         os.remove(RESET_EMPTY_MARKER)
