@@ -45,21 +45,17 @@ def get_conn():
     url = _get_database_url()
     # Parse connection string manually to avoid special character issues
     # Format: postgresql://user:password@host:port/database
-    try:
-        # Try direct DSN first
-        conn = psycopg2.connect(url, cursor_factory=psycopg2.extras.RealDictCursor)
-    except psycopg2.OperationalError:
-        # If DSN fails, parse and use keyword args (handles special chars better)
-        from urllib.parse import urlparse
-        parsed = urlparse(url)
-        conn = psycopg2.connect(
-            host=parsed.hostname,
-            port=parsed.port or 5432,
-            database=parsed.path.lstrip("/"),
-            user=parsed.username,
-            password=parsed.password,
-            cursor_factory=psycopg2.extras.RealDictCursor
-        )
+    from urllib.parse import urlparse, unquote
+    parsed = urlparse(url)
+    
+    conn = psycopg2.connect(
+        host=parsed.hostname,
+        port=parsed.port or 5432,
+        database=parsed.path.lstrip("/"),
+        user=parsed.username,
+        password=unquote(parsed.password) if parsed.password else None,
+        cursor_factory=psycopg2.extras.RealDictCursor
+    )
     conn.autocommit = False
     return conn
 
