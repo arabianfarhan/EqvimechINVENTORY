@@ -538,7 +538,9 @@ def inject_theme():
             margin-bottom: 0.8rem;
             box-shadow: var(--glass-shadow);
         }
-        .item-name { color: var(--glass-text); font-size: 1rem; font-weight: 700; margin-bottom: 0.15rem; }
+        .item-name-row { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.15rem; }
+        .item-name { color: var(--glass-text); font-size: 1rem; font-weight: 700; }
+        .item-code-badge { font-size: 0.75rem; font-weight: 600; color: var(--accent); opacity: 0.8; white-space: nowrap; margin-left: 0.5rem; }
         .item-desc { color: var(--glass-muted); font-size: 0.85rem; margin-bottom: 0.65rem; line-height: 1.5; }
         .pill-row  { display: flex; flex-wrap: wrap; gap: 0.35rem; }
         .pill      { display: inline-block; padding: 0.22rem 0.62rem; border-radius: 999px; font-size: 0.73rem; font-weight: 700; border: 1px solid rgba(255,255,255,0.28); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
@@ -1022,10 +1024,9 @@ def show_item_details_dialog(conn):
     st.markdown(
         f"""
         <div class="item-card">
-            <div class="item-name">{part['name']}</div>
+            <div class="item-name-row"><span class="item-name">{part['name']}</span><span class="item-code-badge">{part['part_id']}</span></div>
             <div class="item-desc">{part['description']}</div>
             <div class="pill-row">
-                <span class="pill p-neutral">{part['part_id']}</span>
                 <span class="pill p-neutral">Location: {part['location']}</span>
                 <span class="pill p-neutral">Category: {safe_part_field(part, 'category', 'Others')}</span>
                 <span class="pill p-neutral">Unit: {part['unit']}</span>
@@ -1054,7 +1055,7 @@ def show_pick_dialog(conn):
     st.markdown(
         f"""
         <div class="item-card">
-            <div class="item-name">{part['name']}</div>
+            <div class="item-name-row"><span class="item-name">{part['name']}</span><span class="item-code-badge">{part['part_id']}</span></div>
             <div class="item-desc">{part['description']}</div>
             <div class="pill-row">
                 <span class="pill p-neutral">Location: {part['location']}</span>
@@ -1233,7 +1234,7 @@ def show_deposit_dialog(conn):
     st.markdown(
         f"""
         <div class="item-card">
-            <div class="item-name">{part['name']}</div>
+            <div class="item-name-row"><span class="item-name">{part['name']}</span><span class="item-code-badge">{part['part_id']}</span></div>
             <div class="item-desc">{part['description']}</div>
             <div class="pill-row">
                 <span class="pill p-neutral">Location: {part['location']}</span>
@@ -1876,7 +1877,7 @@ def alerts_page(conn):
         st.markdown(
             f"""
             <div class="item-card">
-                <div class="item-name">{part['name']}</div>
+                <div class="item-name-row"><span class="item-name">{part['name']}</span><span class="item-code-badge">{part['part_id']}</span></div>
                 <div class="item-desc">{part['description']}</div>
                 <div class="pill-row">
                     <span class="pill p-zero">Current: {part['quantity']} {part['unit']}</span>
