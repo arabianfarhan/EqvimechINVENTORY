@@ -61,7 +61,19 @@ MASTER_TABLE_COLUMNS = [
 MASTER_CATEGORY_OPTIONS = ["Hardware", "Electronics", "Metals", "Others"]
 
 
-def safe_rerun():
+@st.cache_resource
+def _cached_conn():
+    return get_conn()
+
+
+@st.cache_data(ttl=60)
+def _cached_alerts(_conn):
+    return low_stock_alerts(_conn)
+
+
+def safe_rerun(sync_csv=False):
+    if sync_csv:
+        st.session_state["_needs_csv_sync"] = True
     getattr(st, "rerun", getattr(st, "experimental_rerun", lambda: None))()
 
 
@@ -1213,7 +1225,7 @@ def show_pick_dialog(conn):
                 # ensure animation runs once when pick is completed
                 st.session_state["pick_animation_shown"] = False
                 st.session_state.pop("pick_dialog_part_id", None)
-                safe_rerun()
+                safe_rerun(sync_csv=True)
             except Exception as exc:
                 st.error(str(exc))
 
@@ -1282,7 +1294,7 @@ def show_deposit_dialog(conn):
                 }
                 st.session_state["deposit_animation_shown"] = False
                 st.session_state.pop("deposit_dialog_part_id", None)
-                safe_rerun()
+                safe_rerun(sync_csv=True)
             except Exception as exc:
                 st.error(str(exc))
 
@@ -1935,7 +1947,7 @@ def main():
     inject_theme()
 
     try:
-        conn = get_conn()
+        conn = _cached_conn()
     except Exception as e:
         st.error(f"**Database connection failed:** {e}")
         st.stop()
@@ -1944,11 +1956,13 @@ def main():
         os.remove(RESET_EMPTY_MARKER)
     else:
         bootstrap_parts_catalog(conn)
-    sync_parts_snapshot_csv(conn)
+    # Only sync CSV when explicitly triggered, not on every rerender
+    if st.session_state.pop("_needs_csv_sync", False):
+        sync_parts_snapshot_csv(conn)
     sidebar_identity(conn)
 
     role = st.session_state.get("role", "user")
-    alerts = low_stock_alerts(conn)
+    alerts = _cached_alerts(conn)
 
     # header row
     brand_col, title_col = st.columns([0.18, 0.82])
