@@ -1997,7 +1997,7 @@ def main():
         else:
             alerts_page(conn)
     else:
-        nav_options = ["📦 Items", "⬆ Pick", "📋 History", "🔔 Alerts"]
+        nav_options = ["⬆ Pick", "📦 Items", "📋 History", "🔔 Alerts"]
         active_section = render_main_navigation(nav_options, "main_nav_user")
         clear_inactive_page_state(active_section)
 
