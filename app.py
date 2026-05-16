@@ -66,9 +66,22 @@ def _cached_conn():
     return get_conn()
 
 
+@st.cache_resource
+def _run_db_init():
+    """Run DB schema setup exactly once per server process, not on every rerun."""
+    conn = _cached_conn()
+    init_db(conn)
+    return True
+
+
 @st.cache_data(ttl=60)
 def _cached_alerts(_conn):
     return low_stock_alerts(_conn)
+
+
+@st.cache_data(ttl=3600)
+def _cached_version_info():
+    return get_version_info()
 
 
 def safe_rerun(sync_csv=False):
@@ -770,7 +783,7 @@ def get_version_info():
 
 
 def render_version_stamp():
-    ver, ts = get_version_info()
+    ver, ts = _cached_version_info()
     label = f"v {ver} • {ts}" if ver else ts
     html = (
         f"<div style=\"position:fixed;right:12px;bottom:12px;opacity:0.3;z-index:9999;"
@@ -1951,11 +1964,16 @@ def main():
     except Exception as e:
         st.error(f"**Database connection failed:** {e}")
         st.stop()
-    init_db(conn)
-    if os.path.exists(RESET_EMPTY_MARKER):
-        os.remove(RESET_EMPTY_MARKER)
-    else:
-        bootstrap_parts_catalog(conn)
+    # Run schema setup once per server process, not on every click
+    _run_db_init()
+    # Bootstrap catalog once per browser session (re-runs after a full reset
+    # because reset clears all session_state keys)
+    if not st.session_state.get("_catalog_bootstrapped"):
+        if os.path.exists(RESET_EMPTY_MARKER):
+            os.remove(RESET_EMPTY_MARKER)
+        else:
+            bootstrap_parts_catalog(conn)
+        st.session_state["_catalog_bootstrapped"] = True
     # Only sync CSV when explicitly triggered, not on every rerender
     if st.session_state.pop("_needs_csv_sync", False):
         sync_parts_snapshot_csv(conn)

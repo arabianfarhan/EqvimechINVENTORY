@@ -157,10 +157,12 @@ def ensure_columns(conn):
             "source_tx_id": "INTEGER DEFAULT 0",
         },
     )
+    # Backfill only rows that genuinely have NULL timestamps — a fast no-op
+    # once all rows are populated (avoids full-table scans on every startup).
     c = conn.cursor()
-    c.execute("UPDATE parts SET created_at = COALESCE(created_at, NOW())")
-    c.execute("UPDATE parts SET updated_at = COALESCE(updated_at, NOW())")
-    c.execute("UPDATE transactions SET created_at = COALESCE(created_at, NOW())")
+    c.execute("UPDATE parts SET created_at = NOW() WHERE created_at IS NULL")
+    c.execute("UPDATE parts SET updated_at = NOW() WHERE updated_at IS NULL")
+    c.execute("UPDATE transactions SET created_at = NOW() WHERE created_at IS NULL")
     conn.commit()
 
 
@@ -813,41 +815,68 @@ def get_dashboard_metrics(conn):
 
 def get_dashboard_metrics_with_category(conn, category=None):
     c = conn.cursor()
-    parts_where = "WHERE active = 1"
-    parts_params = []
-    tx_where = ""
-    tx_params = []
-    if category and category != "All":
-        parts_where += " AND category = %s"
-        parts_params.append(category)
-        tx_where = " AND part_id IN (SELECT part_id FROM parts WHERE category = %s)"
-        tx_params.append(category)
+    use_category = category and category != "All"
 
-    def _scalar(sql, params):
-        c.execute(sql, params if params else None)
-        row = c.fetchone()
-        return list(row.values())[0] if row else 0
+    # Single query for all parts-level metrics
+    if use_category:
+        c.execute(
+            """
+            SELECT
+                COUNT(*) FILTER (WHERE active = 1) AS total_items,
+                COALESCE(SUM(quantity) FILTER (WHERE active = 1), 0) AS total_stock_units,
+                COUNT(*) FILTER (WHERE active = 1 AND quantity <= min_level) AS low_stock_items,
+                COUNT(*) FILTER (WHERE active = 1 AND quantity = 0) AS out_of_stock_items
+            FROM parts
+            WHERE category = %s
+            """,
+            (category,),
+        )
+    else:
+        c.execute(
+            """
+            SELECT
+                COUNT(*) FILTER (WHERE active = 1) AS total_items,
+                COALESCE(SUM(quantity) FILTER (WHERE active = 1), 0) AS total_stock_units,
+                COUNT(*) FILTER (WHERE active = 1 AND quantity <= min_level) AS low_stock_items,
+                COUNT(*) FILTER (WHERE active = 1 AND quantity = 0) AS out_of_stock_items
+            FROM parts
+            """
+        )
+    parts_row = c.fetchone()
 
-    total_items = _scalar(f"SELECT COUNT(*) AS v FROM parts {parts_where}", parts_params)
-    total_stock_units = _scalar(f"SELECT COALESCE(SUM(quantity), 0) AS v FROM parts {parts_where}", parts_params)
-    low_stock_items = _scalar(f"SELECT COUNT(*) AS v FROM parts {parts_where} AND quantity <= min_level", parts_params)
-    out_of_stock_items = _scalar(f"SELECT COUNT(*) AS v FROM parts {parts_where} AND quantity = 0", parts_params)
-    issues_today = _scalar(
-        f"SELECT COALESCE(SUM(qty), 0) AS v FROM transactions WHERE tx_type = 'issue' AND created_at::date = CURRENT_DATE {tx_where}",
-        tx_params,
-    )
-    deposits_today = _scalar(
-        f"SELECT COALESCE(SUM(qty), 0) AS v FROM transactions WHERE tx_type = 'deposit' AND created_at::date = CURRENT_DATE {tx_where}",
-        tx_params,
-    )
+    # Single query for today's transaction metrics
+    if use_category:
+        c.execute(
+            """
+            SELECT
+                COALESCE(SUM(t.qty) FILTER (WHERE t.tx_type = 'issue'), 0) AS issues_today,
+                COALESCE(SUM(t.qty) FILTER (WHERE t.tx_type = 'deposit'), 0) AS deposits_today
+            FROM transactions t
+            JOIN parts p ON p.part_id = t.part_id
+            WHERE t.created_at::date = CURRENT_DATE
+              AND p.category = %s
+            """,
+            (category,),
+        )
+    else:
+        c.execute(
+            """
+            SELECT
+                COALESCE(SUM(qty) FILTER (WHERE tx_type = 'issue'), 0) AS issues_today,
+                COALESCE(SUM(qty) FILTER (WHERE tx_type = 'deposit'), 0) AS deposits_today
+            FROM transactions
+            WHERE created_at::date = CURRENT_DATE
+            """
+        )
+    tx_row = c.fetchone()
 
     return {
-        "total_items": total_items,
-        "total_stock_units": total_stock_units,
-        "low_stock_items": low_stock_items,
-        "out_of_stock_items": out_of_stock_items,
-        "issues_today": issues_today,
-        "deposits_today": deposits_today,
+        "total_items": parts_row["total_items"],
+        "total_stock_units": parts_row["total_stock_units"],
+        "low_stock_items": parts_row["low_stock_items"],
+        "out_of_stock_items": parts_row["out_of_stock_items"],
+        "issues_today": tx_row["issues_today"],
+        "deposits_today": tx_row["deposits_today"],
     }
 
 
