@@ -1415,8 +1415,14 @@ def show_import_review_dialog(conn):
         type="primary",
         disabled=not preview["can_import"],
     ):
-        result = import_parts_from_csv(conn, preview["records"])
+        n_changes = sum(
+            1 for e in preview["rows"] if e["action"] in {"insert", "update"}
+        )
+        prog = st.progress(0, text=f"⬆ Saving {n_changes} item(s) to database…")
+        result = import_parts_from_csv(conn, preview["records"], pre_analyzed_rows=preview["rows"])
+        prog.progress(85, text="🗂 Updating inventory snapshot…")
         reset_master_table_draft(conn)
+        prog.progress(100, text="✅ Import complete!")
         st.session_state["im_import_result"] = result
         clear_import_review_state(reset_uploader=True)
         safe_rerun()
@@ -1734,10 +1740,13 @@ def item_master_page(conn):
 
         uploaded = st.file_uploader("⬆ Import CSV", type=["csv"], key=next_import_upload_key())
         if uploaded is not None and not st.session_state.get("im_import_preview"):
+            prog = st.progress(0, text="📂 Reading file…")
             try:
                 import_df = pd.read_csv(uploaded, dtype=str).fillna("")
                 records = import_df.to_dict("records")
+                prog.progress(20, text=f"🔍 Analysing {len(records)} rows — checking duplicates and validating…")
                 preview = analyze_parts_import(conn, records)
+                prog.progress(95, text="✅ Analysis complete — opening review…")
                 preview["records"] = records
                 preview["file_name"] = uploaded.name
                 st.session_state["im_import_preview"] = preview

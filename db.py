@@ -1210,6 +1210,8 @@ def analyze_parts_import(conn, records):
         _payload_from_existing_row(row)
         for row in _c.fetchall()
     ]
+    # Build a fast O(1) lookup — avoids one DB round-trip per CSV row
+    existing_by_id = {p["part_id"]: p for p in existing_payloads}
     uploaded_payloads = []
 
     for row_number, row in enumerate(records, start=2):
@@ -1237,7 +1239,7 @@ def analyze_parts_import(conn, records):
                 analysis["messages"].append(f"Row {row_number}: duplicate item ID in CSV ({part_id})")
             else:
                 seen_part_ids.add(part_id)
-                existing = get_part(conn, part_id)
+                existing = existing_by_id.get(part_id)  # O(1) dict lookup — no DB query
 
                 if existing is None:
                     analysis["inserted"] += 1
@@ -1275,17 +1277,73 @@ def analyze_parts_import(conn, records):
     return analysis
 
 
-def import_parts_from_csv(conn, records):
+def import_parts_from_csv(conn, records, pre_analyzed_rows=None):
     """
     Upsert parts from a list of dicts (from CSV import).
     Required keys: item_code/name or legacy part_id/name.
     Optional: description, unit, quantity, location, min_level, reorder_qty, active.
+
+    Pass pre_analyzed_rows (from a previous analyze_parts_import call) to skip
+    re-analysis and avoid redundant DB queries when the user has already reviewed
+    the preview in the UI.
+
     Returns a summary dict with inserted/updated/unchanged/duplicate_rows/invalid_rows counts.
     """
-    summary = analyze_parts_import(conn, records)
-    for entry in summary["rows"]:
-        if entry["action"] in {"insert", "update"} and entry["payload"] is not None:
-            save_part(conn, entry["payload"])
+    if pre_analyzed_rows is not None:
+        rows = pre_analyzed_rows
+        summary = {
+            "inserted": sum(1 for e in rows if e["action"] == "insert"),
+            "updated": sum(1 for e in rows if e["action"] == "update"),
+            "unchanged": sum(1 for e in rows if e["action"] == "unchanged"),
+            "duplicate_rows": sum(1 for e in rows if e["action"] == "duplicate"),
+            "near_duplicate_rows": sum(1 for e in rows if e.get("duplicate_alert")),
+            "invalid_rows": sum(1 for e in rows if e["action"] == "invalid"),
+            "messages": [e["note"] for e in rows if e["action"] in {"invalid", "duplicate"} and e.get("note")],
+            "rows": rows,
+            "can_import": True,
+            "total_rows": len(records),
+        }
+    else:
+        summary = analyze_parts_import(conn, records)
+        rows = summary["rows"]
+
+    # Bulk upsert all insert/update rows in a single transaction — replaces
+    # individual save_part() calls (each of which did a SELECT + INSERT/UPDATE +
+    # sync_parts_snapshot_csv per row).
+    payloads = [
+        entry["payload"] for entry in rows
+        if entry["action"] in {"insert", "update"} and entry["payload"] is not None
+    ]
+    if payloads:
+        c = conn.cursor()
+        c.execute("BEGIN")
+        for payload in payloads:
+            c.execute(
+                """
+                INSERT INTO parts (
+                    part_id, name, description, unit, quantity, location,
+                    min_level, reorder_qty, category, active
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (part_id) DO UPDATE SET
+                    name        = EXCLUDED.name,
+                    description = EXCLUDED.description,
+                    unit        = EXCLUDED.unit,
+                    quantity    = EXCLUDED.quantity,
+                    location    = EXCLUDED.location,
+                    min_level   = EXCLUDED.min_level,
+                    reorder_qty = EXCLUDED.reorder_qty,
+                    category    = EXCLUDED.category,
+                    active      = EXCLUDED.active,
+                    updated_at  = NOW()
+                """,
+                (
+                    payload["part_id"], payload["name"], payload["description"],
+                    payload["unit"], payload["quantity"], payload["location"],
+                    payload["min_level"], payload["reorder_qty"],
+                    payload.get("category", "Others"), payload["active"],
+                ),
+            )
+        conn.commit()
 
     sync_parts_snapshot_csv(conn)
     return summary
