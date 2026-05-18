@@ -449,7 +449,19 @@ def save_master_table(conn, rows):
         description = str(row.get("description") or "").strip()
         unit = str(row.get("unit") or "Nos").strip() or "Nos"
         location = str(row.get("location") or "").strip()
-        category = str(row.get("category") or "Others").strip() or "Others"
+        # Normalize category: accept case-insensitive and surrounding whitespace.
+        # Category is optional — empty string means unspecified.
+        raw_category = str(row.get("category") or "")
+        category = raw_category.strip()
+        # If provided, map to canonical option if case-insensitive match exists
+        if category:
+            matched = None
+            for opt in CATEGORY_OPTIONS:
+                if opt.lower() == category.lower():
+                    matched = opt
+                    break
+            if matched:
+                category = matched
         quantity = _coerce_non_negative_int(row.get("quantity"), "Quantity", row_number)
         min_level = _coerce_non_negative_int(row.get("min_level"), "Min stock level", row_number)
         reorder_qty = _coerce_non_negative_int(row.get("reorder_qty"), "Reorder quantity", row_number)

@@ -44,7 +44,6 @@ st.set_page_config(
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 LOGO_PATH = os.path.join(APP_DIR, "assets", "eqvimech_logo.svg")
 RESET_EMPTY_MARKER = ".reset_empty_app"
-MASTER_SAVE_PASSWORD = "7089"
 MASTER_TABLE_COLUMNS = [
     "id",
     "part_id",
@@ -147,7 +146,8 @@ def build_master_table_dataframe(conn):
                 "location": str(row.get("location", "") or "").strip(),
                 "min_level": int(row.get("min_level", 0) or 0),
                 "reorder_qty": int(row.get("reorder_qty", 0) or 0),
-                "category": str(row.get("category", "Others") or "Others").strip() or "Others",
+                # Keep category blank if not set in DB (category is optional)
+                "category": str(row.get("category") or "").strip(),
                 "active": bool(row.get("active", 1)),
             }
         )
@@ -165,7 +165,7 @@ def blank_master_table_row():
         "location": "",
         "min_level": 0,
         "reorder_qty": 0,
-        "category": "Others",
+        "category": "",
         "active": True,
     }
 
@@ -887,13 +887,11 @@ def sidebar_identity(conn):
                 use_container_width=True,
                 type="primary" if manager_active else "secondary",
             ):
-                if manager_ready:
-                    st.session_state["role"] = "manager"
-                    st.session_state["user"] = "manager"
-                else:
-                    st.session_state["role"] = "user"
-                    st.session_state["user"] = "operator"
-                    st.session_state["manager_login_requested"] = True
+                # Allow manager mode without an extra password prompt
+                st.session_state["manager_authenticated"] = True
+                st.session_state["manager_login_requested"] = False
+                st.session_state["role"] = "manager"
+                st.session_state["user"] = "manager"
                 safe_rerun()
 
         if not manager_ready and st.session_state.get("role") != "manager":
@@ -1646,38 +1644,48 @@ def item_master_page(conn):
             "location": st.column_config.TextColumn("Location", width="medium"),
             "min_level": st.column_config.NumberColumn("Min Level", min_value=0, step=1, format="%d"),
             "reorder_qty": st.column_config.NumberColumn("Reorder Qty", min_value=0, step=1, format="%d"),
-            "category": st.column_config.SelectboxColumn("Category", options=MASTER_CATEGORY_OPTIONS, required=True),
+            # Category is optional; allow blank/unspecified plus the known options
+            "category": st.column_config.SelectboxColumn(
+                "Category", options=[""] + MASTER_CATEGORY_OPTIONS, required=False
+            ),
             "active": st.column_config.CheckboxColumn("Active"),
         },
     )
     st.session_state["im_master_table_df"] = edited_df[MASTER_TABLE_COLUMNS]
 
-    if st.session_state.pop("im_clear_master_password", False):
-        st.session_state.pop("im_master_password", None)
+    # Allow clearing any leftover password keys from older versions
+    st.session_state.pop("im_master_password", None)
 
-    save_col, password_col = st.columns([0.26, 0.74])
+    save_col, opt_col = st.columns([0.26, 0.74])
     save_clicked = save_col.button("Save table", key="im_save_table", type="primary")
-    master_password = password_col.text_input(
-        "Save password",
-        type="password",
-        placeholder="Enter password to save edits",
-        key="im_master_password",
-    )
+    auto_save = opt_col.checkbox("Auto-save changes", value=True, key="im_autosave")
 
+    def _do_save():
+        try:
+            result = save_master_table(conn, edited_df.to_dict("records"))
+            reset_master_table_draft(conn)
+            st.session_state["im_master_save_notice"] = (
+                f"Master table saved. {result['updated']} row(s) updated, {result['inserted']} row(s) added."
+            )
+            safe_rerun()
+        except Exception as exc:
+            st.error(str(exc))
+
+    # Manual save
     if save_clicked:
-        if master_password != MASTER_SAVE_PASSWORD:
-            st.error("Incorrect save password.")
-        else:
-            try:
-                result = save_master_table(conn, edited_df.to_dict("records"))
-                reset_master_table_draft(conn)
-                st.session_state["im_clear_master_password"] = True
-                st.session_state["im_master_save_notice"] = (
-                    f"Master table saved. {result['updated']} row(s) updated, {result['inserted']} row(s) added."
-                )
-                safe_rerun()
-            except Exception as exc:
-                st.error(str(exc))
+        _do_save()
+
+    # Auto-save when enabled and table differs from DB
+    try:
+        current_sig = _master_table_signature_from_dataframe(edited_df)
+        db_sig = st.session_state.get("im_master_db_signature")
+        last_autosave = st.session_state.get("im_master_last_autosave_signature")
+        if auto_save and current_sig != db_sig and current_sig != last_autosave:
+            _do_save()
+            st.session_state["im_master_last_autosave_signature"] = current_sig
+    except Exception:
+        # keep UI robust in case signature check fails
+        pass
 
     # ── CSV Export / Import ───────────────────────────────────────────────
     st.markdown("---")
