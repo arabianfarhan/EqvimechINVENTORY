@@ -1601,7 +1601,9 @@ def deposit_stock_page(conn):
 
 
 def item_master_page(conn):
-    sync_master_table_draft_from_db(conn)
+    # Skip one DB sync immediately after a save to avoid stale reads overwriting fresh state
+    if not st.session_state.pop("im_skip_db_sync_once", False):
+        sync_master_table_draft_from_db(conn)
 
     save_notice = st.session_state.pop("im_master_save_notice", None)
     if save_notice:
@@ -1663,29 +1665,34 @@ def item_master_page(conn):
     def _do_save():
         try:
             result = save_master_table(conn, edited_df.to_dict("records"))
-            reset_master_table_draft(conn)
+            # Trust the saved edited_df directly — do NOT re-read from DB here.
+            # Re-reading can return stale data from Supabase connection pooling
+            # and overwrite the freshly-saved values, making it look like a revert.
+            saved_df = edited_df[MASTER_TABLE_COLUMNS].copy()
+            saved_sig = _master_table_signature_from_dataframe(saved_df)
+            st.session_state["im_master_table_df"] = saved_df
+            st.session_state["im_master_db_signature"] = saved_sig
+            st.session_state["im_master_last_autosave_signature"] = saved_sig
+            st.session_state.pop("im_master_editor", None)
+            # Skip sync on the very next rerun to avoid stale DB reads overwriting
+            st.session_state["im_skip_db_sync_once"] = True
             st.session_state["im_master_save_notice"] = (
-                f"Master table saved. {result['updated']} row(s) updated, {result['inserted']} row(s) added."
+                f"\u2705 Saved \u2014 {result['updated']} row(s) updated, {result['inserted']} row(s) added."
             )
             safe_rerun()
         except Exception as exc:
-            st.error(str(exc))
+            st.error(f"Save failed: {exc}")
 
     # Manual save
     if save_clicked:
         _do_save()
 
     # Auto-save when enabled and table differs from DB
-    try:
-        current_sig = _master_table_signature_from_dataframe(edited_df)
-        db_sig = st.session_state.get("im_master_db_signature")
-        last_autosave = st.session_state.get("im_master_last_autosave_signature")
-        if auto_save and current_sig != db_sig and current_sig != last_autosave:
-            _do_save()
-            st.session_state["im_master_last_autosave_signature"] = current_sig
-    except Exception:
-        # keep UI robust in case signature check fails
-        pass
+    current_sig = _master_table_signature_from_dataframe(edited_df)
+    db_sig = st.session_state.get("im_master_db_signature")
+    last_autosave = st.session_state.get("im_master_last_autosave_signature")
+    if auto_save and current_sig != db_sig and current_sig != last_autosave:
+        _do_save()
 
     # ── CSV Export / Import ───────────────────────────────────────────────
     st.markdown("---")

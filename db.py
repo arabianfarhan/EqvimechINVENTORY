@@ -471,7 +471,8 @@ def save_master_table(conn, rows):
             raise ValueError(f"Row {row_number}: Item Code is required")
         if not name:
             raise ValueError(f"Row {row_number}: Item name is required")
-        if category not in CATEGORY_OPTIONS:
+        # Category is optional — validate only when provided
+        if category and category not in CATEGORY_OPTIONS:
             raise ValueError(
                 f"Row {row_number}: Category must be one of {', '.join(CATEGORY_OPTIONS)}"
             )
