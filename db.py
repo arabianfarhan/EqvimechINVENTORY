@@ -428,6 +428,11 @@ def _coerce_active_flag(value):
 
 
 def save_master_table(conn, rows):
+    # Ensure no stale/aborted transaction before starting writes
+    try:
+        conn.rollback()
+    except Exception:
+        pass
     c = conn.cursor()
     c.execute("SELECT id, part_id FROM parts ORDER BY id")
     existing_rows = c.fetchall()
@@ -505,8 +510,6 @@ def save_master_table(conn, rows):
         prepared_existing.append(payload)
 
     try:
-        c.execute("BEGIN")
-
         for payload in prepared_existing:
             if payload["part_id"] != payload["current_part_id"]:
                 c.execute(
@@ -570,6 +573,11 @@ def save_master_table(conn, rows):
 
 
 def pick_material(conn, part_id, machine_serials, qty, performed_by, performed_role, purpose, note="", returnable=False):
+    # Ensure no stale/aborted transaction before starting writes
+    try:
+        conn.rollback()
+    except Exception:
+        pass
     c = conn.cursor()
     part = get_part(conn, part_id)
     if part is None:
@@ -595,7 +603,6 @@ def pick_material(conn, part_id, machine_serials, qty, performed_by, performed_r
         raise ValueError("Insufficient stock")
 
     try:
-        c.execute("BEGIN")
         previous_stock = part["quantity"]
         running_balance = previous_stock - qty
         c.execute(
@@ -634,6 +641,11 @@ def pick_material(conn, part_id, machine_serials, qty, performed_by, performed_r
 
 
 def deposit_stock(conn, part_id, qty, performed_by, performed_role, note=""):
+    # Ensure no stale/aborted transaction before starting writes
+    try:
+        conn.rollback()
+    except Exception:
+        pass
     c = conn.cursor()
     part = get_part(conn, part_id)
     if part is None:
@@ -644,7 +656,6 @@ def deposit_stock(conn, part_id, qty, performed_by, performed_role, note=""):
     previous_stock = part["quantity"]
     balance_stock = previous_stock + qty
     try:
-        c.execute("BEGIN")
         c.execute(
             "UPDATE parts SET quantity = %s, updated_at = NOW() WHERE part_id = %s",
             (balance_stock, part_id),
@@ -680,6 +691,11 @@ def deposit_stock(conn, part_id, qty, performed_by, performed_role, note=""):
 
 
 def return_issue_material(conn, issue_tx_id, performed_by, performed_role, note=""):
+    # Ensure no stale/aborted transaction before starting writes
+    try:
+        conn.rollback()
+    except Exception:
+        pass
     c = conn.cursor()
     if (performed_role or "").strip().lower() != "manager":
         raise ValueError("Only managers can return material")
@@ -707,7 +723,6 @@ def return_issue_material(conn, issue_tx_id, performed_by, performed_role, note=
         return_note = f"{prefix} | {return_note}" if return_note else prefix
 
     try:
-        c.execute("BEGIN")
         c.execute(
             "UPDATE parts SET quantity = %s, updated_at = NOW() WHERE part_id = %s",
             (balance_stock, issue["part_id"]),
@@ -1328,8 +1343,12 @@ def import_parts_from_csv(conn, records, pre_analyzed_rows=None):
         if entry["action"] in {"insert", "update"} and entry["payload"] is not None
     ]
     if payloads:
+        # Ensure no stale/aborted transaction before bulk import writes
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         c = conn.cursor()
-        c.execute("BEGIN")
         for payload in payloads:
             c.execute(
                 """

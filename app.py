@@ -1667,23 +1667,23 @@ def item_master_page(conn):
     def _do_save():
         try:
             result = save_master_table(conn, edited_df.to_dict("records"))
-            # Trust the saved edited_df directly — do NOT re-read from DB here.
-            # Re-reading can return stale data from Supabase connection pooling
-            # and overwrite the freshly-saved values, making it look like a revert.
+            # Trust the saved edited_df directly — no DB re-read needed.
             saved_df = edited_df[MASTER_TABLE_COLUMNS].copy()
             saved_sig = _master_table_signature_from_dataframe(saved_df)
             st.session_state["im_master_table_df"] = saved_df
             st.session_state["im_master_db_signature"] = saved_sig
             st.session_state["im_master_last_autosave_signature"] = saved_sig
             st.session_state.pop("im_master_editor", None)
-            # Skip sync on the very next rerun to avoid stale DB reads overwriting
             st.session_state["im_skip_db_sync_once"] = True
             st.session_state["im_master_save_notice"] = (
-                f"\u2705 Saved \u2014 {result['updated']} row(s) updated, {result['inserted']} row(s) added."
+                f"\u2705 Saved \u2014 {result['updated']} updated, {result['inserted']} added."
             )
             safe_rerun()
         except Exception as exc:
-            st.error(f"Save failed: {exc}")
+            # Save failed — revert display to actual DB values so user can see true state
+            reset_master_table_draft(conn)
+            st.session_state.pop("im_master_last_autosave_signature", None)
+            st.error(f"\u274c Save failed: {exc}. Table reverted to last saved values.")
 
     # Manual save
     if save_clicked:
