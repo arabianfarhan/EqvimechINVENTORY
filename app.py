@@ -888,12 +888,13 @@ def sidebar_identity(conn):
                 use_container_width=True,
                 type="primary" if manager_active else "secondary",
             ):
-                # Allow manager mode without an extra password prompt
-                st.session_state["manager_authenticated"] = True
-                st.session_state["manager_login_requested"] = False
-                st.session_state["role"] = "manager"
-                st.session_state["user"] = "manager"
-                safe_rerun()
+                if manager_active:
+                    # Already unlocked — clicking again does nothing
+                    pass
+                else:
+                    # Require password dialog before granting manager access
+                    st.session_state["manager_login_requested"] = True
+                    safe_rerun()
 
         if not manager_ready and st.session_state.get("role") != "manager":
             st.session_state["role"] = "user"
