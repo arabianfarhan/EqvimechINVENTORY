@@ -273,11 +273,12 @@ def inject_theme():
         .block-container {
             padding-top: 2.5rem !important;
             padding-bottom: 4rem !important;
-            max-width: 880px !important;
+            max-width: 1300px !important;
         }
         @media (min-width: 1100px) {
             .block-container {
                 padding-top: 3.5rem !important;
+                max-width: 1500px !important;
             }
         }
         @media (max-width: 640px) {
@@ -1634,23 +1635,24 @@ def item_master_page(conn):
         hide_index=True,
         height=420,
         num_rows="fixed",
-        column_order=MASTER_TABLE_COLUMNS,
+        # Quantity near the front so it's visible without horizontal scrolling
+        column_order=["id", "part_id", "name", "quantity", "unit", "location", "category", "min_level", "reorder_qty", "description", "active"],
         disabled=["id"],
         column_config={
             "id": st.column_config.NumberColumn("ID", help="Internal row ID", disabled=True, width="small"),
-            "part_id": st.column_config.TextColumn("Item Code", required=True),
+            "part_id": st.column_config.TextColumn("Item Code", required=True, width="medium"),
             "name": st.column_config.TextColumn("Name", required=True, width="medium"),
-            "description": st.column_config.TextColumn("Description", width="large"),
+            "description": st.column_config.TextColumn("Description", width="small"),
             "unit": st.column_config.TextColumn("Unit", width="small"),
-            "quantity": st.column_config.NumberColumn("Quantity", min_value=0, step=1, format="%d"),
-            "location": st.column_config.TextColumn("Location", width="medium"),
-            "min_level": st.column_config.NumberColumn("Min Level", min_value=0, step=1, format="%d"),
-            "reorder_qty": st.column_config.NumberColumn("Reorder Qty", min_value=0, step=1, format="%d"),
+            "quantity": st.column_config.NumberColumn("Qty", min_value=0, step=1, format="%d", width="small"),
+            "location": st.column_config.TextColumn("Location", width="small"),
+            "min_level": st.column_config.NumberColumn("Min", min_value=0, step=1, format="%d", width="small"),
+            "reorder_qty": st.column_config.NumberColumn("Reorder", min_value=0, step=1, format="%d", width="small"),
             # Category is optional; allow blank/unspecified plus the known options
             "category": st.column_config.SelectboxColumn(
-                "Category", options=[""] + MASTER_CATEGORY_OPTIONS, required=False
+                "Category", options=[""] + MASTER_CATEGORY_OPTIONS, required=False, width="small"
             ),
-            "active": st.column_config.CheckboxColumn("Active"),
+            "active": st.column_config.CheckboxColumn("Active", width="small"),
         },
     )
     st.session_state["im_master_table_df"] = edited_df[MASTER_TABLE_COLUMNS]
