@@ -1,6 +1,7 @@
 import os
 import subprocess
 import datetime as dt
+from zoneinfo import ZoneInfo
 import pandas as pd
 import streamlit as st
 from st_keyup import st_keyup
@@ -45,6 +46,7 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 LOGO_PATH = os.path.join(APP_DIR, "assets", "eqvimech_logo.svg")
 RESET_EMPTY_MARKER = ".reset_empty_app"
 MASTER_TABLE_COLUMNS = [
+    "row_no",
     "id",
     "part_id",
     "name",
@@ -134,9 +136,10 @@ def format_import_summary(summary, prefix="Import complete"):
 def build_master_table_dataframe(conn):
     rows = rows_to_dicts(get_parts(conn, active_only=False))
     prepared = []
-    for row in rows:
+    for idx, row in enumerate(rows, start=1):
         prepared.append(
             {
+                "row_no": idx,
                 "id": int(row.get("id", 0)),
                 "part_id": str(row.get("part_id", "") or "").strip(),
                 "name": str(row.get("name", "") or "").strip(),
@@ -156,6 +159,7 @@ def build_master_table_dataframe(conn):
 
 def blank_master_table_row():
     return {
+        "row_no": None,
         "id": None,
         "part_id": "",
         "name": "",
@@ -775,11 +779,11 @@ def get_version_info():
         try:
             if os.path.exists(ITEMS_SNAPSHOT_CSV_PATH):
                 m = os.path.getmtime(ITEMS_SNAPSHOT_CSV_PATH)
-                ts = dt.datetime.fromtimestamp(m).strftime("%Y-%m-%d %H:%M:%S")
+                ts = dt.datetime.fromtimestamp(m, tz=ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S IST")
         except Exception:
             ts = None
     if not ts:
-        ts = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        ts = dt.datetime.now(tz=ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S IST")
     return short, ts
 
 
@@ -1008,13 +1012,13 @@ def _show_arrow_animation_once(key_prefix="pick"):
     st.session_state[flag_key] = True
 
 
-def render_part_picker(parts, search_key, dialog_key, button_prefix, placeholder, category_key=None):
+def render_part_picker(parts, parts_all, search_key, dialog_key, button_prefix, placeholder, category_key=None):
     search_term = live_search_input("Search item", placeholder, search_key)
     matches = filter_parts(parts, search_term)
 
     # optional category filter
     if category_key:
-        categories = sorted({safe_part_field(p, "category", "Others") for p in parts})
+        categories = sorted({safe_part_field(p, "category", "Others") for p in parts_all})
         if categories:
             sel = st.selectbox("Category", ["All"] + categories, key=category_key)
             if sel and sel != "All":
@@ -1023,7 +1027,30 @@ def render_part_picker(parts, search_key, dialog_key, button_prefix, placeholder
     st.caption(f"Showing {len(matches)} of {len(parts)} items")
     with st.container(height=460, border=True):
         if not matches:
-            st.info("No items matched your search.")
+            # If no active matches, also check inactive items (present in master but not active)
+            q = (search_term or "").strip().lower()
+            inactive_matches = []
+            if q:
+                for p in parts_all:
+                    try:
+                        active_flag = int(safe_part_field(p, "active", 1) or 0)
+                    except Exception:
+                        active_flag = 1
+                    if active_flag == 0:
+                        name = str(safe_part_field(p, "name", "") or "").lower()
+                        pid = str(safe_part_field(p, "part_id", "") or "").lower()
+                        desc = str(safe_part_field(p, "description", "") or "").lower()
+                        loc = str(safe_part_field(p, "location", "") or "").lower()
+                        if q in name or q in pid or q in desc or q in loc:
+                            inactive_matches.append(p)
+
+            if inactive_matches:
+                st.info("No active items matched your search.")
+                st.info(f"{len(inactive_matches)} inactive item(s) matched your search — enable them in Master to use them.")
+                for p in inactive_matches[:30]:
+                    st.write(part_list_label(p))
+            else:
+                st.info("No items matched your search.")
         else:
             for p in matches:
                 pid = safe_part_field(p, "part_id", "")
@@ -1495,14 +1522,16 @@ def returnables_page(conn):
 
 
 def items_page(conn):
-    parts = get_parts(conn)
+    parts_active = get_parts(conn)
+    parts_all = get_parts(conn, active_only=False)
 
     if not parts:
         st.info("No items available.")
         return
 
     render_part_picker(
-        parts,
+        parts_active,
+        parts_all,
         "items_search",
         "items_dialog_part_id",
         "items_browser",
@@ -1543,13 +1572,15 @@ def pick_material_page(conn):
             safe_rerun()
         return
 
-    available = get_parts(conn)
+    available_active = get_parts(conn)
+    available_all = get_parts(conn, active_only=False)
     if not available:
         st.info("No active items available for issue.")
         return
 
     render_part_picker(
-        available,
+        available_active,
+        available_all,
         "pick_search",
         "pick_dialog_part_id",
         "pick_browser",
@@ -1586,13 +1617,15 @@ def deposit_stock_page(conn):
             safe_rerun()
         return
 
-    parts = get_parts(conn, active_only=False)
-    if not parts:
+    parts_all = get_parts(conn, active_only=False)
+    parts_active = parts_all
+    if not parts_all:
         st.info("Add items via Item Master before depositing stock.")
         return
 
     render_part_picker(
-        parts,
+        parts_active,
+        parts_all,
         "deposit_search",
         "deposit_dialog_part_id",
         "deposit_browser",
@@ -1637,9 +1670,10 @@ def item_master_page(conn):
         height=420,
         num_rows="fixed",
         # Quantity near the front so it's visible without horizontal scrolling
-        column_order=["id", "part_id", "name", "quantity", "unit", "location", "category", "min_level", "reorder_qty", "description", "active"],
+        column_order=["row_no", "id", "part_id", "name", "quantity", "unit", "location", "category", "min_level", "reorder_qty", "description", "active"],
         disabled=["id"],
         column_config={
+            "row_no": st.column_config.NumberColumn("#", help="Row number (display only)", disabled=True, width="small"),
             "id": st.column_config.NumberColumn("ID", help="Internal row ID", disabled=True, width="small"),
             "part_id": st.column_config.TextColumn("Item Code", required=True, width="medium"),
             "name": st.column_config.TextColumn("Name", required=True, width="medium"),
@@ -1667,9 +1701,11 @@ def item_master_page(conn):
 
     def _do_save():
         try:
-            result = save_master_table(conn, edited_df.to_dict("records"))
+            # Replace NaNs with empty strings so validators see blank, not 'nan'
+            cleaned = edited_df.fillna("")
+            result = save_master_table(conn, cleaned.to_dict("records"))
             # Trust the saved edited_df directly — no DB re-read needed.
-            saved_df = edited_df[MASTER_TABLE_COLUMNS].copy()
+            saved_df = cleaned[MASTER_TABLE_COLUMNS].copy()
             saved_sig = _master_table_signature_from_dataframe(saved_df)
             st.session_state["im_master_table_df"] = saved_df
             st.session_state["im_master_db_signature"] = saved_sig

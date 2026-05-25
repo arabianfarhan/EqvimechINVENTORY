@@ -476,11 +476,21 @@ def save_master_table(conn, rows):
             raise ValueError(f"Row {row_number}: Item Code is required")
         if not name:
             raise ValueError(f"Row {row_number}: Item name is required")
-        # Category is optional — validate only when provided
+        # Category is optional — validate only when provided. If an unknown
+        # category string is present (legacy imports/misspellings), attempt a
+        # safe fallback: map to a guessed canonical category, otherwise set
+        # to 'Others'. This prevents UI save failures when old data contains
+        # non-standard category values.
         if category and category not in CATEGORY_OPTIONS:
-            raise ValueError(
-                f"Row {row_number}: Category must be one of {', '.join(CATEGORY_OPTIONS)}"
-            )
+            suggested = None
+            try:
+                suggested = guess_category(" ".join([name or "", description or ""]))
+            except Exception:
+                suggested = None
+            if suggested in CATEGORY_OPTIONS:
+                category = suggested
+            else:
+                category = "Others"
         if part_id in seen_part_ids:
             raise ValueError(f"Row {row_number}: Duplicate Item Code '{part_id}'")
         seen_part_ids.add(part_id)
@@ -1005,7 +1015,7 @@ def _normalize_part_payload(row):
         "location": str(row.get("location", "")).strip(),
         "min_level": int(row.get("min_level", 0) or 0),
         "reorder_qty": int(row.get("reorder_qty", 0) or 0),
-        "active": int(row.get("active", 1) or 1),
+        "active": _coerce_active_flag(row.get("active", 1)),
         "category": str(row.get("category", "Others")).strip() or "Others",
     }
 
@@ -1350,6 +1360,8 @@ def import_parts_from_csv(conn, records, pre_analyzed_rows=None):
             pass
         c = conn.cursor()
         for payload in payloads:
+            # Ensure active is normalized to 0/1 for safety (CSV may contain other truthy values)
+            payload["active"] = _coerce_active_flag(payload.get("active", 1))
             c.execute(
                 """
                 INSERT INTO parts (
