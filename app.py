@@ -1525,7 +1525,7 @@ def items_page(conn):
     parts_active = get_parts(conn)
     parts_all = get_parts(conn, active_only=False)
 
-    if not parts:
+    if not parts_active:
         st.info("No items available.")
         return
 
@@ -1574,7 +1574,7 @@ def pick_material_page(conn):
 
     available_active = get_parts(conn)
     available_all = get_parts(conn, active_only=False)
-    if not available:
+    if not available_active:
         st.info("No active items available for issue.")
         return
 
