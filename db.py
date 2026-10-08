@@ -1,11 +1,15 @@
 import csv
 import difflib
+import functools
+import json
 import os
 import threading
+import time
 
 import psycopg2
 import psycopg2.extras
 import psycopg2.pool
+from psycopg2.extensions import TRANSACTION_STATUS_IDLE
 
 # ---------------------------------------------------------------------------
 # Database backend: PostgreSQL via Supabase (or any Postgres host).
@@ -128,13 +132,18 @@ class ConnectionManager:
 
     Each script run borrows its own connection and returns it at the end, so
     one user's transaction can never commit or roll back another user's work.
-    Broken connections (network drop, Supabase idle timeout, server restart)
-    are detected on checkout and replaced automatically.
+    Connections run in autocommit mode for reads (one network round trip per
+    query instead of BEGIN + query + ROLLBACK); write functions open an
+    explicit transaction via @transactional. A connection idle for a while is
+    health-checked before reuse and replaced if the network/Supabase dropped it.
     """
+
+    IDLE_PING_SECONDS = 45
 
     def __init__(self, minconn=1, maxconn=12):
         self._kwargs = _connect_kwargs()
         self._lock = threading.Lock()
+        self._last_used = {}
         try:
             self._pool = psycopg2.pool.ThreadedConnectionPool(minconn, maxconn, **self._kwargs)
         except psycopg2.OperationalError as e:
@@ -144,10 +153,13 @@ class ConnectionManager:
         if conn.closed:
             return False
         try:
-            conn.rollback()  # clear any aborted / idle transaction
-            with conn.cursor() as c:
-                c.execute("SELECT 1")
-            conn.rollback()
+            if conn.info.transaction_status != TRANSACTION_STATUS_IDLE:
+                conn.rollback()
+            conn.autocommit = True
+            last = self._last_used.get(id(conn), 0)
+            if time.monotonic() - last > self.IDLE_PING_SECONDS:
+                with conn.cursor() as c:
+                    c.execute("SELECT 1")
             return True
         except Exception:
             return False
@@ -164,21 +176,30 @@ class ConnectionManager:
                 last_error = e
                 continue
             if self._healthy(conn):
-                conn.autocommit = False
                 return conn
+            self._last_used.pop(id(conn), None)
             with self._lock:
                 self._pool.putconn(conn, close=True)
         raise _describe_conn_error(self._kwargs, last_error or "connection unhealthy")
 
+    def mark_all_stale(self):
+        """After a dropped connection, health-check every pooled connection on next use."""
+        self._last_used.clear()
+
     def putconn(self, conn):
         if conn is None:
             return
-        broken = conn.closed
+        broken = bool(conn.closed)
         if not broken:
             try:
-                conn.rollback()  # never leave a transaction open between runs
+                if conn.info.transaction_status != TRANSACTION_STATUS_IDLE:
+                    conn.rollback()  # never leave a transaction open between runs
+                conn.autocommit = True
+                self._last_used[id(conn)] = time.monotonic()
             except Exception:
                 broken = True
+        if broken:
+            self._last_used.pop(id(conn), None)
         with self._lock:
             try:
                 self._pool.putconn(conn, close=broken)
@@ -186,6 +207,39 @@ class ConnectionManager:
                 pass
 
 
+def transactional(fn):
+    """Run a write function inside one explicit transaction.
+
+    Commits are done by the function itself; anything left open (an error or
+    an early return) is rolled back. The connection's previous autocommit mode
+    is restored afterwards.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(conn, *args, **kwargs):
+        previous = conn.autocommit
+        if not previous:
+            # Already in manual-transaction mode (nested call or a plain
+            # get_conn() connection): the function manages commit itself.
+            return fn(conn, *args, **kwargs)
+        if conn.info.transaction_status != TRANSACTION_STATUS_IDLE:
+            conn.rollback()
+        conn.autocommit = False
+        try:
+            return fn(conn, *args, **kwargs)
+        finally:
+            try:
+                if not conn.closed and conn.info.transaction_status != TRANSACTION_STATUS_IDLE:
+                    conn.rollback()
+                if not conn.closed:
+                    conn.autocommit = previous
+            except Exception:
+                pass
+
+    return wrapper
+
+
+@transactional
 def init_db(conn):
     c = conn.cursor()
     c.execute(
@@ -235,6 +289,7 @@ def init_db(conn):
         )
         """
     )
+    c.execute(SAVE_MASTER_FUNCTION_SQL)
     conn.commit()
     ensure_columns(conn)
     normalize_existing_categories(conn)
@@ -310,6 +365,7 @@ def ensure_table_columns(conn, table_name, desired_columns):
     conn.commit()
 
 
+@transactional
 def normalize_existing_categories(conn):
     """One-time-safe cleanup: merge HARDWARE/Hardware, METAL/Metals, MACHINIG/Machining..."""
     c = conn.cursor()
@@ -332,6 +388,7 @@ def get_meta(conn, key):
     return row["value"] if row else None
 
 
+@transactional
 def set_meta(conn, key, value):
     c = conn.cursor()
     c.execute(
@@ -435,6 +492,7 @@ def sync_parts_snapshot_csv(conn, active_only=False):
             )
 
 
+@transactional
 def save_part(conn, part_data):
     payload = dict(part_data)
     payload["category"] = normalize_category(payload.get("category"))
@@ -542,11 +600,8 @@ def save_master_table(conn, rows, original_rows=None, performed_by="manager", pe
     StockConflictError is raised instead of silently undoing someone's issue
     or inward. Every quantity edit is recorded in history as an 'adjust'.
     """
-    try:
+    if conn.info.transaction_status != TRANSACTION_STATUS_IDLE:
         conn.rollback()
-    except Exception:
-        pass
-    c = conn.cursor()
 
     original_by_id = {}
     for row in original_rows or []:
@@ -557,10 +612,16 @@ def save_master_table(conn, rows, original_rows=None, performed_by="manager", pe
     prepared_existing = []
     prepared_new = []
     seen_part_ids = set()
+    incomplete_new = 0
 
     for row_number, row in enumerate(rows, start=1):
         row_id = _row_id(row)
         if row_id is None and _row_is_effectively_blank(row):
+            continue
+        if row_id is None and (not str(row.get("part_id") or "").strip() or not str(row.get("name") or "").strip()):
+            # A new row the manager is still filling in - save it once it has
+            # both an Item Code and a Name instead of shouting an error.
+            incomplete_new += 1
             continue
         payload = _clean_master_row(row, row_number)
         if payload["part_id"] in seen_part_ids:
@@ -582,116 +643,140 @@ def save_master_table(conn, rows, original_rows=None, performed_by="manager", pe
         prepared_existing.append(payload)
 
     if not prepared_existing and not prepared_new:
-        return {"updated": 0, "inserted": 0, "adjusted": 0}
+        return {"updated": 0, "inserted": 0, "adjusted": 0, "incomplete": incomplete_new}
 
-    adjusted = 0
+    edits = []
+    for payload in prepared_existing:
+        has_original = "original_quantity" in payload
+        edits.append({
+            "id": payload["id"],
+            "part_id": payload["part_id"], "name": payload["name"], "description": payload["description"],
+            "unit": payload["unit"], "quantity": payload["quantity"], "location": payload["location"],
+            "min_level": payload["min_level"], "reorder_qty": payload["reorder_qty"],
+            "category": payload["category"], "active": payload["active"],
+            "check_quantity": has_original,
+            "original_quantity": payload.get("original_quantity"),
+            "qty_changed": (not has_original) or payload["quantity"] != payload["original_quantity"],
+        })
+    for payload in prepared_new:
+        edits.append({**payload, "id": None})
+
+    # The whole save runs inside one database function: a single network
+    # round trip (important when the app server is far from the database),
+    # and fully atomic - either every edit is saved or none is.
+    c = conn.cursor()
     try:
-        locked = {}
-        if prepared_existing:
-            c.execute(
-                "SELECT * FROM parts WHERE id = ANY(%s) FOR UPDATE",
-                ([p["id"] for p in prepared_existing],),
-            )
-            locked = {int(r["id"]): r for r in c.fetchall()}
-
-        # Temporarily move renamed codes out of the way so swaps don't collide
-        for payload in prepared_existing:
-            current = locked.get(payload["id"])
-            if current is None:
-                raise ValueError(f"Row {payload['row_number']}: Item no longer exists. Refresh and try again.")
-            payload["current"] = current
-            if payload["part_id"] != current["part_id"]:
-                c.execute(
-                    "UPDATE parts SET part_id = %s WHERE id = %s",
-                    (f"__tmp__{payload['id']}__", payload["id"]),
-                )
-
-        for payload in prepared_existing:
-            current = payload["current"]
-            db_qty = int(current["quantity"] or 0)
-            new_qty = db_qty
-            if "original_quantity" in payload:
-                if payload["quantity"] != payload["original_quantity"]:
-                    if db_qty != payload["original_quantity"]:
-                        raise StockConflictError(
-                            f"Stock of '{current['name']}' changed to {db_qty} while you were editing "
-                            f"(someone issued or inwarded it). Your quantity edit was not saved - "
-                            f"the table has been refreshed, please re-check and edit again."
-                        )
-                    new_qty = payload["quantity"]
-            else:
-                new_qty = payload["quantity"]
-
-            c.execute(
-                """
-                UPDATE parts
-                SET part_id = %s, name = %s, description = %s, unit = %s, quantity = %s, location = %s,
-                    min_level = %s, reorder_qty = %s, category = %s, active = %s, updated_at = NOW()
-                WHERE id = %s
-                """,
-                (
-                    payload["part_id"], payload["name"], payload["description"], payload["unit"],
-                    new_qty, payload["location"], payload["min_level"], payload["reorder_qty"],
-                    payload["category"], payload["active"], payload["id"],
-                ),
-            )
-            if current["part_id"] != payload["part_id"]:
-                # keep history linked to the renamed item
-                c.execute(
-                    "UPDATE transactions SET part_id = %s WHERE part_id = %s",
-                    (payload["part_id"], current["part_id"]),
-                )
-            if new_qty != db_qty:
-                adjusted += 1
-                c.execute(
-                    """
-                    INSERT INTO transactions (
-                        tx_type, part_id, part_name, qty, unit, performed_by, performed_role,
-                        machine_sn, purpose, note, prev_stock, balance_stock
-                    ) VALUES ('adjust', %s, %s, %s, %s, %s, %s, '', 'stock correction', %s, %s, %s)
-                    """,
-                    (
-                        payload["part_id"], payload["name"], new_qty - db_qty, payload["unit"],
-                        performed_by, performed_role, "Quantity edited in Item Master",
-                        db_qty, new_qty,
-                    ),
-                )
-
-        for payload in prepared_new:
-            c.execute(
-                """
-                INSERT INTO parts (
-                    part_id, name, description, unit, quantity, location, min_level, reorder_qty, category, active
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    payload["part_id"], payload["name"], payload["description"], payload["unit"],
-                    payload["quantity"], payload["location"], payload["min_level"],
-                    payload["reorder_qty"], payload["category"], payload["active"],
-                ),
-            )
-            if payload["quantity"]:
-                c.execute(
-                    """
-                    INSERT INTO transactions (
-                        tx_type, part_id, part_name, qty, unit, performed_by, performed_role,
-                        machine_sn, purpose, note, prev_stock, balance_stock
-                    ) VALUES ('adjust', %s, %s, %s, %s, %s, %s, '', 'opening stock', %s, 0, %s)
-                    """,
-                    (
-                        payload["part_id"], payload["name"], payload["quantity"], payload["unit"],
-                        performed_by, performed_role, "New item added in Item Master", payload["quantity"],
-                    ),
-                )
-
-        conn.commit()
-        return {"updated": len(prepared_existing), "inserted": len(prepared_new), "adjusted": adjusted}
+        c.execute(
+            "SELECT inv_save_master(%s::jsonb, %s, %s) AS result",
+            (json.dumps(edits), performed_by, performed_role),
+        )
+        result = c.fetchone()["result"]
+        if not conn.autocommit:
+            conn.commit()
     except psycopg2.IntegrityError as exc:
-        conn.rollback()
-        raise ValueError(f"Save failed due to a duplicate item code: {str(exc).splitlines()[0]}")
-    except Exception:
-        conn.rollback()
+        if not conn.autocommit:
+            conn.rollback()
+        detail = getattr(getattr(exc, "diag", None), "message_detail", None) or str(exc).splitlines()[0]
+        raise ValueError(f"That Item Code already exists - item codes must be unique. ({detail})") from None
+    except psycopg2.Error as exc:
+        if not conn.autocommit:
+            conn.rollback()
+        message = getattr(getattr(exc, "diag", None), "message_primary", None) or str(exc)
+        if message.startswith("INV_CONFLICT|"):
+            _, name, qty = message.split("|", 2)
+            raise StockConflictError(
+                f"Stock of '{name}' changed to {qty} while you were editing "
+                f"(someone issued or inwarded it). Your quantity edit was not saved - "
+                f"the table has been refreshed, please re-check and edit again."
+            ) from None
+        if message.startswith("INV_MISSING|"):
+            raise ValueError(f"Item '{message.split('|', 1)[1]}' no longer exists. Press Refresh and try again.") from None
         raise
+    result["incomplete"] = incomplete_new
+    return result
+
+
+SAVE_MASTER_FUNCTION_SQL = r"""
+CREATE OR REPLACE FUNCTION inv_save_master(edits jsonb, actor text, actor_role text)
+RETURNS jsonb
+LANGUAGE plpgsql
+AS $fn$
+DECLARE
+    e jsonb;
+    cur parts%ROWTYPE;
+    old_codes jsonb := '{}'::jsonb;
+    old_code text;
+    new_qty integer;
+    n_updated integer := 0;
+    n_inserted integer := 0;
+    n_adjusted integer := 0;
+BEGIN
+    -- Pass 1: lock every edited row and move renamed codes out of the way
+    FOR e IN SELECT value FROM jsonb_array_elements(edits) LOOP
+        IF e->>'id' IS NOT NULL THEN
+            SELECT * INTO cur FROM parts WHERE id = (e->>'id')::int FOR UPDATE;
+            IF NOT FOUND THEN
+                RAISE EXCEPTION 'INV_MISSING|%', e->>'part_id';
+            END IF;
+            old_codes := old_codes || jsonb_build_object(cur.id::text, cur.part_id);
+            IF cur.part_id IS DISTINCT FROM e->>'part_id' THEN
+                UPDATE parts SET part_id = '__tmp__' || cur.id || '__' WHERE id = cur.id;
+            END IF;
+        END IF;
+    END LOOP;
+
+    -- Pass 2: apply the edits
+    FOR e IN SELECT value FROM jsonb_array_elements(edits) LOOP
+        IF e->>'id' IS NOT NULL THEN
+            SELECT * INTO cur FROM parts WHERE id = (e->>'id')::int;
+            old_code := old_codes->>(cur.id::text);
+            new_qty := cur.quantity;
+            IF (e->>'qty_changed')::boolean THEN
+                IF (e->>'check_quantity')::boolean
+                   AND cur.quantity IS DISTINCT FROM (e->>'original_quantity')::int THEN
+                    RAISE EXCEPTION 'INV_CONFLICT|%|%', cur.name, cur.quantity;
+                END IF;
+                new_qty := (e->>'quantity')::int;
+            END IF;
+            UPDATE parts SET
+                part_id = e->>'part_id', name = e->>'name', description = e->>'description',
+                unit = e->>'unit', quantity = new_qty, location = e->>'location',
+                min_level = (e->>'min_level')::int, reorder_qty = (e->>'reorder_qty')::int,
+                category = e->>'category', active = (e->>'active')::int, updated_at = NOW()
+            WHERE id = cur.id;
+            IF old_code IS DISTINCT FROM e->>'part_id' THEN
+                UPDATE transactions SET part_id = e->>'part_id' WHERE part_id = old_code;
+            END IF;
+            IF new_qty IS DISTINCT FROM cur.quantity THEN
+                n_adjusted := n_adjusted + 1;
+                INSERT INTO transactions (tx_type, part_id, part_name, qty, unit, performed_by, performed_role,
+                                          machine_sn, purpose, note, prev_stock, balance_stock)
+                VALUES ('adjust', e->>'part_id', e->>'name', new_qty - COALESCE(cur.quantity, 0), e->>'unit',
+                        actor, actor_role, '', 'stock correction', 'Quantity edited in Item Master',
+                        COALESCE(cur.quantity, 0), new_qty);
+            END IF;
+            n_updated := n_updated + 1;
+        ELSE
+            INSERT INTO parts (part_id, name, description, unit, quantity, location,
+                               min_level, reorder_qty, category, active)
+            VALUES (e->>'part_id', e->>'name', e->>'description', e->>'unit', (e->>'quantity')::int,
+                    e->>'location', (e->>'min_level')::int, (e->>'reorder_qty')::int,
+                    e->>'category', (e->>'active')::int);
+            IF (e->>'quantity')::int <> 0 THEN
+                INSERT INTO transactions (tx_type, part_id, part_name, qty, unit, performed_by, performed_role,
+                                          machine_sn, purpose, note, prev_stock, balance_stock)
+                VALUES ('adjust', e->>'part_id', e->>'name', (e->>'quantity')::int, e->>'unit',
+                        actor, actor_role, '', 'opening stock', 'New item added in Item Master',
+                        0, (e->>'quantity')::int);
+            END IF;
+            n_inserted := n_inserted + 1;
+        END IF;
+    END LOOP;
+
+    RETURN jsonb_build_object('updated', n_updated, 'inserted', n_inserted, 'adjusted', n_adjusted);
+END;
+$fn$;
+"""
 
 
 def _lock_part(c, part_id):
@@ -700,6 +785,7 @@ def _lock_part(c, part_id):
     return c.fetchone()
 
 
+@transactional
 def pick_material(conn, part_id, machine_serials, qty, performed_by, performed_role, purpose, note="", returnable=False):
     try:
         conn.rollback()
@@ -752,6 +838,7 @@ def pick_material(conn, part_id, machine_serials, qty, performed_by, performed_r
         raise
 
 
+@transactional
 def deposit_stock(conn, part_id, qty, performed_by, performed_role, note=""):
     try:
         conn.rollback()
@@ -796,6 +883,7 @@ def get_transaction(conn, tx_id):
     return c.fetchone()
 
 
+@transactional
 def return_issue_material(conn, issue_tx_id, performed_by, performed_role, note=""):
     try:
         conn.rollback()
@@ -859,16 +947,31 @@ def return_issue_material(conn, issue_tx_id, performed_by, performed_role, note=
         raise
 
 
+@transactional
+def wipe_all_data(conn):
+    c = conn.cursor()
+    c.execute("DELETE FROM transactions")
+    c.execute("DELETE FROM parts")
+    conn.commit()
+
+
 def low_stock_alerts(conn):
     c = conn.cursor()
     c.execute("SELECT * FROM parts WHERE active = 1 AND quantity <= min_level ORDER BY quantity, name")
     return c.fetchall()
 
 
-def list_transactions(conn, tx_type="all", search="", performed_by=None, limit=250):
+def list_transactions(conn, tx_type="all", search="", performed_by=None, limit=250, since_days=None):
     c = conn.cursor()
     sql = "SELECT * FROM transactions WHERE 1=1"
     params = []
+    if since_days is not None:
+        # since_days=0 means "today" in India time
+        sql += (
+            " AND (created_at AT TIME ZONE 'Asia/Kolkata')::date >= "
+            "(NOW() AT TIME ZONE 'Asia/Kolkata')::date - %s"
+        )
+        params.append(int(since_days))
     if tx_type != "all":
         sql += " AND tx_type = %s"
         params.append(tx_type)
@@ -1073,6 +1176,7 @@ def get_machine_usage_by_category(conn, category=None, limit=10):
     return c.fetchall()
 
 
+@transactional
 def delete_part(conn, part_id):
     """Soft-delete: mark active=0 so history is preserved."""
     c = conn.cursor()
@@ -1242,6 +1346,7 @@ def guess_category(text):
     return "Others"
 
 
+@transactional
 def auto_classify_parts(conn, apply=False):
     """Suggest or apply category classification for existing parts.
     If apply=True, updates the DB and returns the number updated and list of changes.
@@ -1362,6 +1467,7 @@ def analyze_parts_import(conn, records):
     return analysis
 
 
+@transactional
 def import_parts_from_csv(conn, records, pre_analyzed_rows=None, performed_by="manager"):
     """
     Upsert parts from a list of dicts (from CSV import).
@@ -1400,10 +1506,6 @@ def import_parts_from_csv(conn, records, pre_analyzed_rows=None, performed_by="m
         if entry["action"] in {"insert", "update"} and entry["payload"] is not None
     ]
     if payloads:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
         c = conn.cursor()
         try:
             c.execute(
@@ -1411,50 +1513,60 @@ def import_parts_from_csv(conn, records, pre_analyzed_rows=None, performed_by="m
                 ([p["part_id"] for p in payloads],),
             )
             current_qty = {r["part_id"]: int(r["quantity"] or 0) for r in c.fetchall()}
+            part_rows = []
+            history_rows = []
             for payload in payloads:
                 payload["active"] = _coerce_active_flag(payload.get("active", 1))
                 payload["category"] = normalize_category(payload.get("category"))
-                c.execute(
-                    """
-                    INSERT INTO parts (
-                        part_id, name, description, unit, quantity, location,
-                        min_level, reorder_qty, category, active
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (part_id) DO UPDATE SET
-                        name        = EXCLUDED.name,
-                        description = EXCLUDED.description,
-                        unit        = EXCLUDED.unit,
-                        quantity    = EXCLUDED.quantity,
-                        location    = EXCLUDED.location,
-                        min_level   = EXCLUDED.min_level,
-                        reorder_qty = EXCLUDED.reorder_qty,
-                        category    = EXCLUDED.category,
-                        active      = EXCLUDED.active,
-                        updated_at  = NOW()
-                    """,
-                    (
-                        payload["part_id"], payload["name"], payload["description"],
-                        payload["unit"], payload["quantity"], payload["location"],
-                        payload["min_level"], payload["reorder_qty"],
-                        payload["category"], payload["active"],
-                    ),
-                )
+                part_rows.append((
+                    payload["part_id"], payload["name"], payload["description"],
+                    payload["unit"], payload["quantity"], payload["location"],
+                    payload["min_level"], payload["reorder_qty"],
+                    payload["category"], payload["active"],
+                ))
                 before = current_qty.get(payload["part_id"], 0)
                 if payload["quantity"] != before:
-                    c.execute(
-                        """
-                        INSERT INTO transactions (
-                            tx_type, part_id, part_name, qty, unit, performed_by, performed_role,
-                            machine_sn, purpose, note, prev_stock, balance_stock
-                        ) VALUES ('adjust', %s, %s, %s, %s, %s, 'manager', '', %s, %s, %s, %s)
-                        """,
-                        (
-                            payload["part_id"], payload["name"], payload["quantity"] - before,
-                            payload["unit"], performed_by,
-                            "opening stock" if payload["part_id"] not in current_qty else "stock correction",
-                            "CSV import", before, payload["quantity"],
-                        ),
-                    )
+                    history_rows.append((
+                        "adjust", payload["part_id"], payload["name"], payload["quantity"] - before,
+                        payload["unit"], performed_by, "manager", "",
+                        "opening stock" if payload["part_id"] not in current_qty else "stock correction",
+                        "CSV import", before, payload["quantity"],
+                    ))
+            # One network round trip per 500 rows instead of one per row.
+            psycopg2.extras.execute_values(
+                c,
+                """
+                INSERT INTO parts (
+                    part_id, name, description, unit, quantity, location,
+                    min_level, reorder_qty, category, active
+                ) VALUES %s
+                ON CONFLICT (part_id) DO UPDATE SET
+                    name        = EXCLUDED.name,
+                    description = EXCLUDED.description,
+                    unit        = EXCLUDED.unit,
+                    quantity    = EXCLUDED.quantity,
+                    location    = EXCLUDED.location,
+                    min_level   = EXCLUDED.min_level,
+                    reorder_qty = EXCLUDED.reorder_qty,
+                    category    = EXCLUDED.category,
+                    active      = EXCLUDED.active,
+                    updated_at  = NOW()
+                """,
+                part_rows,
+                page_size=500,
+            )
+            if history_rows:
+                psycopg2.extras.execute_values(
+                    c,
+                    """
+                    INSERT INTO transactions (
+                        tx_type, part_id, part_name, qty, unit, performed_by, performed_role,
+                        machine_sn, purpose, note, prev_stock, balance_stock
+                    ) VALUES %s
+                    """,
+                    history_rows,
+                    page_size=500,
+                )
             conn.commit()
         except Exception:
             conn.rollback()
