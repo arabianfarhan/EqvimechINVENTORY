@@ -1,4 +1,6 @@
 import os
+import hmac
+import html
 import subprocess
 import datetime as dt
 from zoneinfo import ZoneInfo
@@ -7,15 +9,16 @@ import streamlit as st
 from st_keyup import st_keyup
 
 from db import (
+    APP_TIMEZONE,
+    CATEGORY_OPTIONS,
+    ConnectionManager,
+    StockConflictError,
     analyze_parts_import,
     bootstrap_parts_catalog,
     deposit_stock,
-    get_conn,
-    get_dashboard_metrics,
-    get_machine_usage,
     get_part,
     get_parts,
-    get_top_consumed_items,
+    get_transaction,
     get_dashboard_metrics_with_category,
     get_top_consumed_items_by_category,
     get_machine_usage_by_category,
@@ -30,9 +33,8 @@ from db import (
     return_issue_material,
     rows_to_dicts,
     save_master_table,
-    DB_PATH,
     ITEMS_SNAPSHOT_CSV_PATH,
-    sync_parts_snapshot_csv,
+    normalize_category,
 )
 
 st.set_page_config(
@@ -44,7 +46,6 @@ st.set_page_config(
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 LOGO_PATH = os.path.join(APP_DIR, "assets", "eqvimech_logo.svg")
-RESET_EMPTY_MARKER = ".reset_empty_app"
 MASTER_TABLE_COLUMNS = [
     "row_no",
     "id",
@@ -59,25 +60,73 @@ MASTER_TABLE_COLUMNS = [
     "category",
     "active",
 ]
-MASTER_CATEGORY_OPTIONS = ["Hardware", "Electronics", "Metals", "Others"]
+MASTER_CATEGORY_OPTIONS = list(CATEGORY_OPTIONS)
+PICK_USER_OPTIONS = ["Ravi", "Shani", "Suraj", "Mangesh", "Ram", "Sonu", "Sandip", "Other"]
+
+# Old default codes. They are in a public GitHub repo, so they must be
+# replaced via Streamlit secrets (MANAGER_PASSWORD / RESET_CODE).
+_LEGACY_MANAGER_PASSWORD = "321"
+
+
+def _secret(name, default=None):
+    try:
+        value = st.secrets.get(name)
+    except Exception:
+        value = None
+    if value in (None, ""):
+        value = os.environ.get(name, default)
+    return str(value) if value not in (None, "") else default
+
+
+def manager_password_is_default():
+    return _secret("MANAGER_PASSWORD") is None
+
+
+def check_manager_password(password):
+    expected = _secret("MANAGER_PASSWORD", _LEGACY_MANAGER_PASSWORD)
+    return hmac.compare_digest(str(password or ""), expected)
+
+
+def esc(value):
+    """HTML-escape DB text before putting it inside unsafe_allow_html markup."""
+    return html.escape(str(value if value is not None else ""))
+
+
+def to_ist(df, columns=("created_at", "returned_at")):
+    """Show database timestamps (stored in UTC) as Indian time."""
+    for col in columns:
+        if col in df.columns:
+            converted = pd.to_datetime(df[col], utc=True, errors="coerce").dt.tz_convert(APP_TIMEZONE)
+            df[col] = converted.dt.strftime("%d-%b-%Y %H:%M").fillna("")
+    return df
+
+
+def fmt_ist(value):
+    if not value:
+        return ""
+    try:
+        return pd.Timestamp(value).tz_convert(APP_TIMEZONE).strftime("%d-%b-%Y %H:%M")
+    except Exception:
+        return str(value)
 
 
 @st.cache_resource
-def _cached_conn():
-    return get_conn()
+def _connection_manager():
+    """One connection pool per server process, shared safely by all users."""
+    return ConnectionManager()
 
 
 @st.cache_resource
 def _run_db_init():
-    """Run DB schema setup exactly once per server process, not on every rerun."""
-    conn = _cached_conn()
-    init_db(conn)
+    """Run DB schema setup + one-time catalogue bootstrap once per server process."""
+    manager = _connection_manager()
+    conn = manager.getconn()
+    try:
+        init_db(conn)
+        bootstrap_parts_catalog(conn)
+    finally:
+        manager.putconn(conn)
     return True
-
-
-@st.cache_data(ttl=60)
-def _cached_alerts(_conn):
-    return low_stock_alerts(_conn)
 
 
 @st.cache_data(ttl=3600)
@@ -86,9 +135,16 @@ def _cached_version_info():
 
 
 def safe_rerun(sync_csv=False):
-    if sync_csv:
-        st.session_state["_needs_csv_sync"] = True
     getattr(st, "rerun", getattr(st, "experimental_rerun", lambda: None))()
+
+
+def clear_widget_keys(prefix, part_id):
+    """Forget a dialog's inputs so reopening it starts clean (and a stale
+    quantity can never exceed the new stock limit)."""
+    suffix = f"_{part_id}"
+    for key in list(st.session_state.keys()):
+        if isinstance(key, str) and key.startswith(prefix) and key.endswith(suffix):
+            st.session_state.pop(key, None)
 
 
 def render_brand_logo(width=220):
@@ -149,8 +205,7 @@ def build_master_table_dataframe(conn):
                 "location": str(row.get("location", "") or "").strip(),
                 "min_level": int(row.get("min_level", 0) or 0),
                 "reorder_qty": int(row.get("reorder_qty", 0) or 0),
-                # Keep category blank if not set in DB (category is optional)
-                "category": str(row.get("category") or "").strip(),
+                "category": normalize_category(row.get("category")),
                 "active": bool(row.get("active", 1)),
             }
         )
@@ -169,7 +224,7 @@ def blank_master_table_row():
         "location": "",
         "min_level": 0,
         "reorder_qty": 0,
-        "category": "",
+        "category": "Others",
         "active": True,
     }
 
@@ -179,11 +234,24 @@ def _master_table_signature_from_dataframe(dataframe):
     return tuple(tuple(row) for row in normalized[MASTER_TABLE_COLUMNS].itertuples(index=False, name=None))
 
 
+def _master_editor_has_pending_edits():
+    state = st.session_state.get("im_master_editor") or {}
+    try:
+        return bool(state.get("edited_rows") or state.get("added_rows") or state.get("deleted_rows"))
+    except Exception:
+        return False
+
+
 def sync_master_table_draft_from_db(conn, force=False):
+    # Never throw away edits the manager is in the middle of typing; conflicts
+    # with stock changes are caught at save time instead.
+    if not force and _master_editor_has_pending_edits():
+        return
     fresh_df = build_master_table_dataframe(conn)
     fresh_signature = _master_table_signature_from_dataframe(fresh_df)
     if force or st.session_state.get("im_master_db_signature") != fresh_signature:
         st.session_state["im_master_table_df"] = fresh_df
+        st.session_state["im_master_base_df"] = fresh_df.copy()
         st.session_state["im_master_db_signature"] = fresh_signature
         st.session_state.pop("im_master_editor", None)
 
@@ -828,7 +896,7 @@ def show_manager_password_dialog():
     unlock_col, cancel_col = st.columns(2)
 
     if unlock_col.button("Unlock", key="manager_unlock", type="primary"):
-        if password == "321":
+        if check_manager_password(password):
             st.session_state["manager_authenticated"] = True
             st.session_state["role"] = "manager"
             st.session_state.pop("manager_login_requested", None)
@@ -868,7 +936,7 @@ def sidebar_identity(conn):
                 """,
                 unsafe_allow_html=True,
             )
-            if st.button("Use User", key="role_user_card", use_container_width=True, type="secondary"):
+            if st.button("Use User", key="role_user_card", width="stretch", type="secondary"):
                 st.session_state["role"] = "user"
                 st.session_state["user"] = "operator"
                 st.session_state["manager_authenticated"] = False
@@ -889,7 +957,7 @@ def sidebar_identity(conn):
             if st.button(
                 "Use Manager" if not manager_active else "Manager Active",
                 key="role_manager_card",
-                use_container_width=True,
+                width="stretch",
                 type="primary" if manager_active else "secondary",
             ):
                 if manager_active:
@@ -908,28 +976,39 @@ def sidebar_identity(conn):
 
         st.markdown("---")
         st.caption(f"Access: **{st.session_state['role'].capitalize()}**")
-        st.markdown("---")
-        st.caption("Danger zone — reset application database")
-        reset_code = st.text_input("Enter reset code to wipe app (permanent)", type="password", key="reset_code_input")
-        if st.button("Reset app (permanent)", key="reset_app", type="primary"):
-            if reset_code == "611881":
-                try:
-                    # Wipe all data from the database tables.
-                    reset_c = conn.cursor()
-                    reset_c.execute("DELETE FROM transactions")
-                    reset_c.execute("DELETE FROM parts")
-                    conn.commit()
-                    if os.path.exists(ITEMS_SNAPSHOT_CSV_PATH):
-                        os.remove(ITEMS_SNAPSHOT_CSV_PATH)
 
-                    # Clear session state to avoid stale selections and credentials.
-                    for k in list(st.session_state.keys()):
-                        st.session_state.pop(k, None)
-                    safe_rerun()
-                except Exception as e:
-                    st.error(f"Reset failed: {e}")
-            else:
-                st.error("Incorrect reset code.")
+        is_manager = manager_ready and st.session_state.get("role") == "manager"
+        if is_manager and manager_password_is_default():
+            st.warning(
+                "Manager password is still the default from the public code. "
+                "Set MANAGER_PASSWORD in the Streamlit app secrets."
+            )
+
+        # Database wipe: managers only, and only when a RESET_CODE secret exists.
+        reset_secret = _secret("RESET_CODE")
+        if is_manager and reset_secret:
+            st.markdown("---")
+            with st.expander("Danger zone — wipe all data"):
+                st.caption("Deletes every item and all history. This cannot be undone.")
+                reset_code = st.text_input("Reset code", type="password", key="reset_code_input")
+                confirm_text = st.text_input("Type DELETE to confirm", key="reset_confirm_text")
+                if st.button("Wipe database (permanent)", key="reset_app", type="primary"):
+                    if not hmac.compare_digest(str(reset_code or ""), reset_secret):
+                        st.error("Incorrect reset code.")
+                    elif confirm_text.strip() != "DELETE":
+                        st.error("Type DELETE to confirm.")
+                    else:
+                        try:
+                            reset_c = conn.cursor()
+                            reset_c.execute("DELETE FROM transactions")
+                            reset_c.execute("DELETE FROM parts")
+                            conn.commit()
+                            for k in list(st.session_state.keys()):
+                                st.session_state.pop(k, None)
+                            safe_rerun()
+                        except Exception as e:
+                            conn.rollback()
+                            st.error(f"Reset failed: {e}")
 
     if st.session_state.get("manager_login_requested"):
         show_manager_password_dialog()
@@ -941,8 +1020,8 @@ def filter_parts(parts, query):
         return parts
     return [
         p for p in parts
-        if q in p["name"].lower()
-        or q in p["part_id"].lower()
+        if q in (p["name"] or "").lower()
+        or q in (p["part_id"] or "").lower()
         or q in (p["description"] or "").lower()
         or q in (p["location"] or "").lower()
     ]
@@ -1018,11 +1097,11 @@ def render_part_picker(parts, parts_all, search_key, dialog_key, button_prefix, 
 
     # optional category filter
     if category_key:
-        categories = sorted({safe_part_field(p, "category", "Others") for p in parts_all})
+        categories = sorted({normalize_category(safe_part_field(p, "category", "Others")) for p in parts_all})
         if categories:
             sel = st.selectbox("Category", ["All"] + categories, key=category_key)
             if sel and sel != "All":
-                matches = [p for p in matches if safe_part_field(p, "category", "Others") == sel]
+                matches = [p for p in matches if normalize_category(safe_part_field(p, "category", "Others")) == sel]
 
     st.caption(f"Showing {len(matches)} of {len(parts)} items")
     with st.container(height=460, border=True):
@@ -1057,7 +1136,7 @@ def render_part_picker(parts, parts_all, search_key, dialog_key, button_prefix, 
                 if st.button(
                     part_list_label(p),
                     key=f"{button_prefix}_{pid}",
-                    use_container_width=True,
+                    width="stretch",
                     type="secondary",
                 ):
                     st.session_state[dialog_key] = pid
@@ -1076,12 +1155,12 @@ def show_item_details_dialog(conn):
     st.markdown(
         f"""
         <div class="item-card">
-            <div class="item-name-row"><span class="item-name">{part['name']}</span><span class="item-code-badge">{part['part_id']}</span></div>
-            <div class="item-desc">{part['description']}</div>
+            <div class="item-name-row"><span class="item-name">{esc(part['name'])}</span><span class="item-code-badge">{esc(part['part_id'])}</span></div>
+            <div class="item-desc">{esc(part['description'])}</div>
             <div class="pill-row">
-                <span class="pill p-neutral">Location: {part['location']}</span>
-                <span class="pill p-neutral">Category: {safe_part_field(part, 'category', 'Others')}</span>
-                <span class="pill p-neutral">Unit: {part['unit']}</span>
+                <span class="pill p-neutral">Location: {esc(part['location'])}</span>
+                <span class="pill p-neutral">Category: {esc(safe_part_field(part, 'category', 'Others'))}</span>
+                <span class="pill p-neutral">Unit: {esc(part['unit'])}</span>
                 <span class="pill p-neutral">Min {part['min_level']} &nbsp;&middot;&nbsp; Reorder {part['reorder_qty']}</span>
                 {stock_pill(part['quantity'], part['min_level'])}
             </div>
@@ -1107,11 +1186,11 @@ def show_pick_dialog(conn):
     st.markdown(
         f"""
         <div class="item-card">
-            <div class="item-name-row"><span class="item-name">{part['name']}</span><span class="item-code-badge">{part['part_id']}</span></div>
-            <div class="item-desc">{part['description']}</div>
+            <div class="item-name-row"><span class="item-name">{esc(part['name'])}</span><span class="item-code-badge">{esc(part['part_id'])}</span></div>
+            <div class="item-desc">{esc(part['description'])}</div>
             <div class="pill-row">
-                <span class="pill p-neutral">Location: {part['location']}</span>
-                <span class="pill p-neutral">Category: {safe_part_field(part, 'category', 'Others')}</span>
+                <span class="pill p-neutral">Location: {esc(part['location'])}</span>
+                <span class="pill p-neutral">Category: {esc(safe_part_field(part, 'category', 'Others'))}</span>
                 {stock_pill(part['quantity'], part['min_level'])}
                 <span class="pill p-neutral">Min {part['min_level']} &nbsp;&middot;&nbsp; Reorder {part['reorder_qty']}</span>
             </div>
@@ -1130,7 +1209,7 @@ def show_pick_dialog(conn):
     qty = st.number_input(
         "Quantity to pick",
         min_value=1,
-        max_value=min(int(part["quantity"]), 8),
+        max_value=int(part["quantity"]),
         value=1,
         step=1,
         key=f"pick_qty_{part_id}",
@@ -1195,7 +1274,7 @@ def show_pick_dialog(conn):
 
     # User Name selection: chip-style single select for compact mobile layout
     st.markdown('<div style="margin-top:.6rem;font-weight:700">User Name</div>', unsafe_allow_html=True)
-    user_options = ["Ravi", "Shani", "Suraj", "Mangesh", "Ram", "Sonu", "Sandip", "Other"]
+    user_options = PICK_USER_OPTIONS
     if hasattr(st, "pills"):
         selected_user = st.pills(
             "User Name",
@@ -1213,10 +1292,10 @@ def show_pick_dialog(conn):
             label_visibility="collapsed",
         )
 
+    picked_by = (selected_user or "").strip()
     if selected_user == "Other":
         user_other = st.text_input("Specify other user", placeholder="Name", key=f"pick_user_other_{part_id}")
-        if user_other.strip():
-            selected_user = user_other.strip()
+        picked_by = user_other.strip()
 
     action_col, close_col = st.columns(2)
     if action_col.button("✅  Confirm Material Issue", key=f"confirm_pick_{part_id}", type="primary"):
@@ -1240,8 +1319,8 @@ def show_pick_dialog(conn):
             st.error("Please enter a machine serial number.")
         elif not purpose_parts:
             st.error("Please select at least one Purpose / Usage.")
-        elif (selected_user or "").strip() == "":
-            st.error("Please specify user name.")
+        elif not picked_by:
+            st.error("Please select the user name (or type the name for Other).")
         else:
             try:
                 new_balance = pick_material(
@@ -1249,10 +1328,10 @@ def show_pick_dialog(conn):
                     part["part_id"],
                     [serial],
                     int(qty),
-                    st.session_state["user"],
+                    picked_by,
                     st.session_state["role"],
                     purpose_str,
-                    (selected_user or "").strip(),
+                    "",
                     returnable=returnable,
                 )
                 st.session_state["pick_done"] = {
@@ -1265,12 +1344,14 @@ def show_pick_dialog(conn):
                 # ensure animation runs once when pick is completed
                 st.session_state["pick_animation_shown"] = False
                 st.session_state.pop("pick_dialog_part_id", None)
-                safe_rerun(sync_csv=True)
+                clear_widget_keys("pick_", part_id)
+                safe_rerun()
             except Exception as exc:
                 st.error(str(exc))
 
     if close_col.button("Cancel", key=f"close_pick_dialog_{part_id}", type="secondary"):
         st.session_state.pop("pick_dialog_part_id", None)
+        clear_widget_keys("pick_", part_id)
         safe_rerun()
 
 
@@ -1286,12 +1367,12 @@ def show_deposit_dialog(conn):
     st.markdown(
         f"""
         <div class="item-card">
-            <div class="item-name-row"><span class="item-name">{part['name']}</span><span class="item-code-badge">{part['part_id']}</span></div>
-            <div class="item-desc">{part['description']}</div>
+            <div class="item-name-row"><span class="item-name">{esc(part['name'])}</span><span class="item-code-badge">{esc(part['part_id'])}</span></div>
+            <div class="item-desc">{esc(part['description'])}</div>
             <div class="pill-row">
-                <span class="pill p-neutral">Location: {part['location']}</span>
-                <span class="pill p-neutral">Category: {safe_part_field(part, 'category', 'Others')}</span>
-                <span class="pill p-neutral">Unit: {part['unit']}</span>
+                <span class="pill p-neutral">Location: {esc(part['location'])}</span>
+                <span class="pill p-neutral">Category: {esc(safe_part_field(part, 'category', 'Others'))}</span>
+                <span class="pill p-neutral">Unit: {esc(part['unit'])}</span>
                 {stock_pill(part['quantity'], part['min_level'])}
             </div>
         </div>
@@ -1334,12 +1415,14 @@ def show_deposit_dialog(conn):
                 }
                 st.session_state["deposit_animation_shown"] = False
                 st.session_state.pop("deposit_dialog_part_id", None)
-                safe_rerun(sync_csv=True)
+                clear_widget_keys("deposit_", part_id)
+                safe_rerun()
             except Exception as exc:
                 st.error(str(exc))
 
     if close_col.button("Cancel", key=f"close_deposit_dialog_{part_id}", type="secondary"):
         st.session_state.pop("deposit_dialog_part_id", None)
+        clear_widget_keys("deposit_", part_id)
         safe_rerun()
 
 
@@ -1353,11 +1436,9 @@ def show_return_dialog(conn):
         return
 
     issue_tx_id = st.session_state.get("return_dialog_issue_id")
-    issue = None
-    if issue_tx_id:
-        issue = next((row for row in list_open_returnable_issues(conn, limit=500) if row["id"] == issue_tx_id), None)
-        if issue is None:
-            issue = next((row for row in list_transactions(conn, tx_type="issue", limit=500) if row["id"] == issue_tx_id), None)
+    issue = get_transaction(conn, int(issue_tx_id)) if issue_tx_id else None
+    if issue is not None and (issue["tx_type"] != "issue" or issue["returned_at"]):
+        issue = None
 
     if not issue:
         st.session_state.pop("return_dialog_issue_id", None)
@@ -1367,13 +1448,13 @@ def show_return_dialog(conn):
     st.markdown(
         f"""
         <div class="item-card">
-            <div class="item-name">{issue['part_name']}</div>
-            <div class="item-desc">Issued by {issue['performed_by']} on {issue['created_at']}</div>
+            <div class="item-name">{esc(issue['part_name'])}</div>
+            <div class="item-desc">Issued by {esc(issue['performed_by'])} on {fmt_ist(issue['created_at'])}</div>
             <div class="pill-row">
-                <span class="pill p-neutral">{issue['part_id']}</span>
-                <span class="pill p-neutral">Qty: {issue['qty']} {issue['unit']}</span>
-                <span class="pill p-neutral">Machine: {issue['machine_sn'] or 'N/A'}</span>
-                <span class="pill p-neutral">Purpose: {issue['purpose'] or 'N/A'}</span>
+                <span class="pill p-neutral">{esc(issue['part_id'])}</span>
+                <span class="pill p-neutral">Qty: {issue['qty']} {esc(issue['unit'])}</span>
+                <span class="pill p-neutral">Machine: {esc(issue['machine_sn'] or 'N/A')}</span>
+                <span class="pill p-neutral">Purpose: {esc(issue['purpose'] or 'N/A')}</span>
             </div>
         </div>
         """,
@@ -1390,12 +1471,12 @@ def show_return_dialog(conn):
             new_balance = return_issue_material(
                 conn,
                 int(issue_tx_id),
-                st.session_state["user"],
+                "manager",
                 st.session_state["role"],
                 note.strip(),
             )
             st.session_state.pop("return_dialog_issue_id", None)
-            st.success(f"Returned successfully. New balance: {new_balance} {issue['unit']}")
+            st.success(f"Returned successfully. New balance: {new_balance} {esc(issue['unit'])}")
             safe_rerun()
         except Exception as exc:
             st.error(str(exc))
@@ -1428,7 +1509,7 @@ def show_import_review_dialog(conn):
 
     preview_df = import_preview_dataframe(preview)
     if not preview_df.empty:
-        st.dataframe(style_import_preview_dataframe(preview_df), use_container_width=True, hide_index=True, height=380)
+        st.dataframe(style_import_preview_dataframe(preview_df), width="stretch", hide_index=True, height=380)
 
     if preview["messages"]:
         st.caption("Validation notes")
@@ -1446,8 +1527,14 @@ def show_import_review_dialog(conn):
             1 for e in preview["rows"] if e["action"] in {"insert", "update"}
         )
         prog = st.progress(0, text=f"⬆ Saving {n_changes} item(s) to database…")
-        result = import_parts_from_csv(conn, preview["records"], pre_analyzed_rows=preview["rows"])
-        prog.progress(85, text="🗂 Updating inventory snapshot…")
+        try:
+            result = import_parts_from_csv(conn, preview["records"], pre_analyzed_rows=preview["rows"])
+        except Exception as exc:
+            conn.rollback()
+            prog.empty()
+            st.error(f"Import failed, nothing was saved: {exc}")
+            return
+        prog.progress(85, text="🗂 Refreshing table…")
         reset_master_table_draft(conn)
         prog.progress(100, text="✅ Import complete!")
         st.session_state["im_import_result"] = result
@@ -1461,7 +1548,7 @@ def show_import_review_dialog(conn):
 
 def returnables_page(conn):
     role = st.session_state.get("role", "user")
-    performed_by = None if role == "manager" else st.session_state["user"]
+    performed_by = None
 
     search = live_search_input(
         "Search returnables",
@@ -1483,11 +1570,11 @@ def returnables_page(conn):
                 with st.container(height=260, border=True):
                     for issue in pending_rows:
                         meta = issue["machine_sn"] or issue["purpose"] or "No machine / purpose noted"
-                        label = f"{issue['part_name']} | {issue['part_id']} | {meta}"
+                        label = f"{esc(issue['part_name'])} | {esc(issue['part_id'])} | {meta}"
                         if st.button(
                             label,
                             key=f"returnables_pending_{issue['id']}",
-                            use_container_width=True,
+                            width="stretch",
                             type="secondary",
                         ):
                             st.session_state["return_dialog_issue_id"] = int(issue["id"])
@@ -1495,7 +1582,7 @@ def returnables_page(conn):
                 if st.session_state.get("return_dialog_issue_id"):
                     show_return_dialog(conn)
 
-            pending_df = pd.DataFrame(rows_to_dicts(pending_rows))
+            pending_df = to_ist(pd.DataFrame(rows_to_dicts(pending_rows)))
             pending_df["return_status"] = "Pending Return"
             pending_cols = [
                 c for c in [
@@ -1503,14 +1590,14 @@ def returnables_page(conn):
                     "performed_by", "machine_sn", "purpose", "note"
                 ] if c in pending_df.columns
             ]
-            st.dataframe(pending_df[pending_cols], use_container_width=True, hide_index=True)
+            st.dataframe(pending_df[pending_cols], width="stretch", hide_index=True)
 
     with done_tab:
         st.markdown("<div class='section-label'>Returned Materials</div>", unsafe_allow_html=True)
         if not done_rows:
             st.info("No returned returnable items.")
         else:
-            done_df = pd.DataFrame(rows_to_dicts(done_rows))
+            done_df = to_ist(pd.DataFrame(rows_to_dicts(done_rows)))
             done_df["return_status"] = "Returned"
             done_cols = [
                 c for c in [
@@ -1518,7 +1605,7 @@ def returnables_page(conn):
                     "performed_by", "machine_sn", "purpose", "note", "returned_tx_id"
                 ] if c in done_df.columns
             ]
-            st.dataframe(done_df[done_cols], use_container_width=True, hide_index=True)
+            st.dataframe(done_df[done_cols], width="stretch", hide_index=True)
 
 
 def items_page(conn):
@@ -1556,9 +1643,9 @@ def pick_material_page(conn):
                     Material Issued Successfully!
                 </div>
                 <div style="font-size:1rem;color:#166534;margin-top:.6rem">
-                    <strong>{done['qty']}</strong> × {done['part']} issued
+                    <strong>{done['qty']}</strong> × {esc(done['part'])} issued
                     &nbsp;|&nbsp; New balance:
-                    <strong>{done['balance']} {done['unit']}</strong>
+                    <strong>{done['balance']} {esc(done['unit'])}</strong>
                 </div>
                 {"<div style='margin-top:.6rem;font-size:0.9rem;color:#b45309;font-weight:700'>↩ Returnable — item must be returned to store</div>" if done.get('returnable') else ""}
             </div>
@@ -1603,9 +1690,9 @@ def deposit_stock_page(conn):
                 <div style="font-size:2.8rem">📥</div>
                 <div style="font-size:1.5rem;font-weight:800;color:#15803d">Inwarded Successfully!</div>
                 <div style="font-size:1rem;color:#166534;margin-top:.6rem">
-                    <strong>{deposit_done['qty']}</strong> × {deposit_done['part']} inwarded
+                    <strong>{deposit_done['qty']}</strong> × {esc(deposit_done['part'])} inwarded
                     &nbsp;|&nbsp; New balance:
-                    <strong>{deposit_done['balance']} {deposit_done['unit']}</strong>
+                    <strong>{deposit_done['balance']} {esc(deposit_done['unit'])}</strong>
                 </div>
             </div>
             """,
@@ -1636,13 +1723,14 @@ def deposit_stock_page(conn):
 
 
 def item_master_page(conn):
-    # Skip one DB sync immediately after a save to avoid stale reads overwriting fresh state
-    if not st.session_state.pop("im_skip_db_sync_once", False):
-        sync_master_table_draft_from_db(conn)
+    sync_master_table_draft_from_db(conn)
 
     save_notice = st.session_state.pop("im_master_save_notice", None)
     if save_notice:
         st.success(save_notice)
+    save_error = st.session_state.pop("im_master_save_error", None)
+    if save_error:
+        st.error(save_error)
 
     top_left, top_right = st.columns([0.28, 0.72])
     if top_left.button("Add blank row", key="im_add_row", type="secondary"):
@@ -1665,7 +1753,7 @@ def item_master_page(conn):
     edited_df = st.data_editor(
         draft_df,
         key="im_master_editor",
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         height=420,
         num_rows="fixed",
@@ -1685,7 +1773,11 @@ def item_master_page(conn):
             "reorder_qty": st.column_config.NumberColumn("Reorder", min_value=0, step=1, format="%d", width="small"),
             # Category is optional; allow blank/unspecified plus the known options
             "category": st.column_config.SelectboxColumn(
-                "Category", options=[""] + MASTER_CATEGORY_OPTIONS, required=False, width="small"
+                "Category",
+                options=sorted(set(MASTER_CATEGORY_OPTIONS) | set(draft_df["category"].dropna().astype(str)) - {""}),
+                required=True,
+                default="Others",
+                width="small",
             ),
             "active": st.column_config.CheckboxColumn("Active", width="small"),
         },
@@ -1700,35 +1792,57 @@ def item_master_page(conn):
     auto_save = opt_col.checkbox("Auto-save changes", value=True, key="im_autosave")
 
     def _do_save():
+        cleaned = edited_df.astype(object).where(edited_df.notna(), "")
+        base_df = st.session_state.get("im_master_base_df")
+        original_rows = None
+        if base_df is not None:
+            original_rows = base_df.astype(object).where(base_df.notna(), "").to_dict("records")
         try:
-            # Replace NaNs with empty strings so validators see blank, not 'nan'
-            cleaned = edited_df.fillna("")
-            result = save_master_table(conn, cleaned.to_dict("records"))
-            # Trust the saved edited_df directly — no DB re-read needed.
-            saved_df = cleaned[MASTER_TABLE_COLUMNS].copy()
-            saved_sig = _master_table_signature_from_dataframe(saved_df)
-            st.session_state["im_master_table_df"] = saved_df
-            st.session_state["im_master_db_signature"] = saved_sig
-            st.session_state["im_master_last_autosave_signature"] = saved_sig
-            st.session_state.pop("im_master_editor", None)
-            st.session_state["im_skip_db_sync_once"] = True
-            st.session_state["im_master_save_notice"] = (
-                f"\u2705 Saved \u2014 {result['updated']} updated, {result['inserted']} added."
+            result = save_master_table(
+                conn,
+                cleaned.to_dict("records"),
+                original_rows=original_rows,
+                performed_by=st.session_state.get("user", "manager"),
+                performed_role="manager",
             )
-            safe_rerun()
-        except Exception as exc:
-            # Save failed — revert display to actual DB values so user can see true state
+        except StockConflictError as exc:
             reset_master_table_draft(conn)
-            st.session_state.pop("im_master_last_autosave_signature", None)
-            st.error(f"\u274c Save failed: {exc}. Table reverted to last saved values.")
+            st.session_state["im_master_save_error"] = f"\u26a0\ufe0f {exc}"
+            safe_rerun()
+            return
+        except ValueError as exc:
+            # Validation problem (missing name, duplicate code...). Keep the
+            # manager's edits on screen so they can correct them.
+            st.session_state["im_master_last_autosave_signature"] = current_sig
+            st.error(f"\u274c Not saved: {exc}")
+            return
+        except Exception as exc:
+            reset_master_table_draft(conn)
+            st.session_state["im_master_save_error"] = f"\u274c Save failed: {exc}. Table reloaded from the database."
+            safe_rerun()
+            return
+        if not (result["updated"] or result["inserted"]):
+            # Nothing to write yet (e.g. a freshly added blank row) - keep the draft.
+            st.session_state["im_master_last_autosave_signature"] = current_sig
+            return
+        # Reload from the database so the table always shows the true stock.
+        reset_master_table_draft(conn)
+        st.session_state.pop("im_master_last_autosave_signature", None)
+        if result["updated"] or result["inserted"]:
+            msg = f"\u2705 Saved \u2014 {result['updated']} updated, {result['inserted']} added."
+            if result.get("adjusted"):
+                msg += f" {result['adjusted']} stock correction(s) recorded in History."
+            st.session_state["im_master_save_notice"] = msg
+        safe_rerun()
+
+    # Auto-save when enabled and table differs from DB
+    current_sig = _master_table_signature_from_dataframe(edited_df)
+    db_sig = st.session_state.get("im_master_db_signature")
 
     # Manual save
     if save_clicked:
         _do_save()
 
-    # Auto-save when enabled and table differs from DB
-    current_sig = _master_table_signature_from_dataframe(edited_df)
-    db_sig = st.session_state.get("im_master_db_signature")
     last_autosave = st.session_state.get("im_master_last_autosave_signature")
     if auto_save and current_sig != db_sig and current_sig != last_autosave:
         _do_save()
@@ -1764,7 +1878,7 @@ def item_master_page(conn):
             st.info("No suggested changes. Items already classified or matched Others.")
         else:
             df = pd.DataFrame(changes)
-            st.dataframe(df[["part_id", "name", "current", "suggested"]], use_container_width=True)
+            st.dataframe(df[["part_id", "name", "current", "suggested"]], width="stretch")
             c1, c2 = st.columns([0.5, 0.5])
             if c1.button("Apply suggested categories", key="im_autoclass_apply"):
                 try:
@@ -1815,7 +1929,7 @@ def item_master_page(conn):
 def dashboard_page(conn):
     # optional category filter for dashboard
     parts_all = get_parts(conn, active_only=False)
-    categories = sorted({safe_part_field(p, "category", "Others") for p in parts_all})
+    categories = sorted({normalize_category(safe_part_field(p, "category", "Others")) for p in parts_all})
     selected_category = st.selectbox("Category", ["All"] + categories, key="dash_category")
 
     metrics = get_dashboard_metrics_with_category(conn, None if selected_category == "All" else selected_category)
@@ -1868,17 +1982,17 @@ def dashboard_page(conn):
     if top_df.empty:
         st.info("No issue history yet.")
     else:
-        st.dataframe(top_df, use_container_width=True, hide_index=True)
+        st.dataframe(top_df, width="stretch", hide_index=True)
 
     st.markdown('<div class="section-label">Top machine usage</div>', unsafe_allow_html=True)
-    mdf = pd.DataFrame(rows_to_dicts(machine_usage))
+    mdf = pd.DataFrame(rows_to_dicts(machine_usage)).rename(columns={"issued_lines": "issued_qty"})
     if mdf.empty:
         st.info("No machine-wise issue history yet.")
     else:
-        st.dataframe(mdf, use_container_width=True, hide_index=True)
+        st.dataframe(mdf, width="stretch", hide_index=True)
 
     st.markdown('<div class="section-label">Recent activity</div>', unsafe_allow_html=True)
-    rdf = pd.DataFrame(rows_to_dicts(recent_rows))
+    rdf = to_ist(pd.DataFrame(rows_to_dicts(recent_rows)))
     if rdf.empty:
         st.info("No stock movement yet.")
     else:
@@ -1887,23 +2001,25 @@ def dashboard_page(conn):
                          "performed_by", "machine_sn", "purpose", "balance_stock"]
             if c in rdf.columns
         ]
-        st.dataframe(rdf[display_cols], use_container_width=True, hide_index=True)
+        st.dataframe(rdf[display_cols], width="stretch", hide_index=True)
 
 
 def history_page(conn):
     fc1, fc2 = st.columns(2)
-    hist_options = ["all", "issue", "deposit", "return"]
+    hist_options = ["all", "issue", "deposit", "return", "adjust"]
     tx_type = fc1.selectbox(
         "Type",
         hist_options,
-        format_func=lambda x: {"all": "All", "issue": "Issue", "deposit": "Inward", "return": "Return"}.get(x, x),
+        format_func=lambda x: {"all": "All", "issue": "Issue", "deposit": "Inward", "return": "Return", "adjust": "Stock correction"}.get(x, x),
         key="hist_type",
     )
     with fc2:
         search = live_search_input("Search", "Item, serial no, user…", "hist_search")
 
     role = st.session_state.get("role", "user")
-    performed_by = None if role == "manager" else st.session_state["user"]
+    # Operators share one login, so filtering by login name hid nothing useful;
+    # everyone sees the full movement history (it is read-only).
+    performed_by = None
 
     if role == "manager":
         open_returns = list_open_returnable_issues(conn, search=search.strip())
@@ -1914,11 +2030,11 @@ def history_page(conn):
             with st.container(height=260, border=True):
                 for issue in open_returns:
                     meta = issue["machine_sn"] or issue["purpose"] or "No machine / purpose noted"
-                    label = f"{issue['part_name']} | {issue['part_id']} | {meta}"
+                    label = f"{esc(issue['part_name'])} | {esc(issue['part_id'])} | {meta}"
                     if st.button(
                         label,
                         key=f"return_issue_{issue['id']}",
-                        use_container_width=True,
+                        width="stretch",
                         type="secondary",
                     ):
                         st.session_state["return_dialog_issue_id"] = int(issue["id"])
@@ -1942,6 +2058,10 @@ def history_page(conn):
         return ""
 
     df["return_status"] = df.apply(_return_status, axis=1)
+    df = to_ist(df)
+    df["tx_type"] = df["tx_type"].map(
+        {"issue": "Issue", "deposit": "Inward", "return": "Return", "adjust": "Stock correction"}
+    ).fillna(df["tx_type"])
 
     display_cols = [
         c for c in ["created_at", "tx_type", "return_status", "part_name", "qty", "unit",
@@ -1949,7 +2069,7 @@ def history_page(conn):
                      "prev_stock", "balance_stock", "note"]
         if c in df.columns
     ]
-    st.dataframe(df[display_cols], use_container_width=True, hide_index=True)
+    st.dataframe(df[display_cols], width="stretch", hide_index=True)
     csv = df.to_csv(index=False).encode("utf-8")
     st.download_button("⬇ Export CSV", csv, file_name="inventory_history.csv", mime="text/csv")
 
@@ -1965,13 +2085,13 @@ def alerts_page(conn):
         st.markdown(
             f"""
             <div class="item-card">
-                <div class="item-name-row"><span class="item-name">{part['name']}</span><span class="item-code-badge">{part['part_id']}</span></div>
-                <div class="item-desc">{part['description']}</div>
+                <div class="item-name-row"><span class="item-name">{esc(part['name'])}</span><span class="item-code-badge">{esc(part['part_id'])}</span></div>
+                <div class="item-desc">{esc(part['description'])}</div>
                 <div class="pill-row">
-                    <span class="pill p-zero">Current: {part['quantity']} {part['unit']}</span>
+                    <span class="pill p-zero">Current: {part['quantity']} {esc(part['unit'])}</span>
                     <span class="pill p-neutral">Min: {part['min_level']}</span>
                     <span class="pill p-neutral">Reorder: {part['reorder_qty']}</span>
-                    <span class="pill p-neutral">Location: {part['location']}</span>
+                    <span class="pill p-neutral">Location: {esc(part['location'])}</span>
                 </div>
             </div>
             """,
@@ -2023,27 +2143,28 @@ def main():
     inject_theme()
 
     try:
-        conn = _cached_conn()
+        manager = _connection_manager()
+        _run_db_init()
+        conn = manager.getconn()
     except Exception as e:
         st.error(f"**Database connection failed:** {e}")
+        st.caption("Check DATABASE_URL in the app secrets and that the Supabase project is not paused.")
+        if st.button("Retry", type="primary"):
+            _connection_manager.clear()
+            _run_db_init.clear()
+            safe_rerun()
         st.stop()
-    # Run schema setup once per server process, not on every click
-    _run_db_init()
-    # Bootstrap catalog once per browser session (re-runs after a full reset
-    # because reset clears all session_state keys)
-    if not st.session_state.get("_catalog_bootstrapped"):
-        if os.path.exists(RESET_EMPTY_MARKER):
-            os.remove(RESET_EMPTY_MARKER)
-        else:
-            bootstrap_parts_catalog(conn)
-        st.session_state["_catalog_bootstrapped"] = True
-    # Only sync CSV when explicitly triggered, not on every rerender
-    if st.session_state.pop("_needs_csv_sync", False):
-        sync_parts_snapshot_csv(conn)
+    try:
+        render_app(conn)
+    finally:
+        manager.putconn(conn)
+
+
+def render_app(conn):
     sidebar_identity(conn)
 
     role = st.session_state.get("role", "user")
-    alerts = _cached_alerts(conn)
+    alerts = low_stock_alerts(conn)
 
     # header row
     brand_col, title_col = st.columns([0.18, 0.82])

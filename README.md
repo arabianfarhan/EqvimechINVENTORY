@@ -1,21 +1,35 @@
-# Stock Keeper - Streamlit Inventory App
+# Eqvimech Inventory (Streamlit)
 
-Minimal Streamlit app to manage inventory with a simple "take material" workflow.
+Mobile-first store app: browse items, issue material against machine serial
+numbers, inward stock, track returnables, item master, dashboard, history and
+low-stock alerts. Data lives in PostgreSQL (Supabase).
 
-Run locally:
+## Run locally
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+cp .streamlit/secrets.toml.example .streamlit/secrets.toml   # then fill it in
 streamlit run app.py
 ```
 
-Default demo users (change passwords in `app.py`):
-- storemanager / manager123 (manager role)
-- user1 / user123 (user role)
+## Deploy (Streamlit Community Cloud)
 
-Deploy to Streamlit Community Cloud:
-1. Create a GitHub repo and push this project.
-2. In Streamlit Cloud, create a new app and connect the GitHub repo.
-3. Set the main file to `app.py` and ensure `requirements.txt` is present.
+1. Push this repo to GitHub, main file `app.py`.
+2. In the app's **Settings -> Secrets**, set `DATABASE_URL` and `MANAGER_PASSWORD`
+   (see `.streamlit/secrets.toml.example`). `RESET_CODE` is optional.
+
+## Access
+
+- **User** - issue material, browse items, view history and alerts.
+- **Manager** - unlocked with `MANAGER_PASSWORD`; adds inward, returnables,
+  item master, dashboard.
+
+## Notes
+
+- `items_master_live.csv` is only used once, to fill an empty database the very
+  first time the app starts. After that the database is the only source of truth.
+- Every stock change (issue, inward, return, quantity edit in Item Master, CSV
+  import) is written to History.
+- All times are shown in IST.
