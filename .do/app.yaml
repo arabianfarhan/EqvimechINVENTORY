@@ -1,0 +1,26 @@
+# DigitalOcean App Platform spec — region blr (Bangalore), close to Supabase Mumbai.
+# Create the app from this repo in the DigitalOcean dashboard; it picks up this
+# file. Then add the secret values (DATABASE_URL, MANAGER_PASSWORD) when asked.
+spec:
+  name: eqvimech-inventory
+  region: blr
+  services:
+    - name: web
+      github:
+        repo: arabianfarhan/EqvimechINVENTORY
+        branch: main
+        deploy_on_push: true
+      dockerfile_path: Dockerfile
+      http_port: 8080
+      instance_count: 1
+      instance_size_slug: apps-s-1vcpu-1gb
+      health_check:
+        http_path: /_stcore/health
+        initial_delay_seconds: 20
+      envs:
+        - key: DATABASE_URL
+          scope: RUN_TIME
+          type: SECRET
+        - key: MANAGER_PASSWORD
+          scope: RUN_TIME
+          type: SECRET

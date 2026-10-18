@@ -1,0 +1,7 @@
+.git
+.devcontainer
+__pycache__
+*.pyc
+.streamlit/secrets.toml
+push_changes.command
+Stock fixed.csv
