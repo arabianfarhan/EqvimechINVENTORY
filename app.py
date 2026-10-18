@@ -9,11 +9,13 @@ from contextlib import contextmanager
 from zoneinfo import ZoneInfo
 import pandas as pd
 import psycopg2
+import psycopg2.errors
 import streamlit as st
 from st_keyup import st_keyup
 
 from db import (
     APP_TIMEZONE,
+    SCHEMA_VERSION,
     CATEGORY_OPTIONS,
     ConnectionManager,
     StockConflictError,
@@ -127,8 +129,13 @@ def _connection_manager():
 
 
 @st.cache_resource
-def _run_db_init():
-    """Run DB schema setup + one-time catalogue bootstrap once per server process."""
+def _run_db_init(schema_version=SCHEMA_VERSION):
+    """Run DB schema setup + one-time catalogue bootstrap.
+
+    Cached per server process *and* per schema version: Streamlit Cloud often
+    loads new code without restarting the process, so a version bump forces
+    the new tables to be created on the next page load.
+    """
     manager = _connection_manager()
     conn = manager.getconn()
     try:
@@ -3468,8 +3475,21 @@ def main():
             _run_db_init.clear()
             safe_rerun()
         st.stop()
-    with db_session() as conn:
-        render_app(conn)
+    try:
+        with db_session() as conn:
+            render_app(conn)
+    except psycopg2.errors.UndefinedTable:
+        # A table the code needs doesn't exist yet (e.g. right after an update).
+        # Run the schema setup again and reload the page once.
+        if st.session_state.get("_schema_retry"):
+            st.session_state.pop("_schema_retry", None)
+            raise
+        st.session_state["_schema_retry"] = True
+        _run_db_init.clear()
+        _run_db_init()
+        st.rerun()
+    else:
+        st.session_state.pop("_schema_retry", None)
 
 
 def render_app(conn):

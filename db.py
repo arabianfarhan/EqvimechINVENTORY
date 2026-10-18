@@ -19,6 +19,10 @@ from psycopg2.extensions import TRANSACTION_STATUS_IDLE
 #   postgresql://USER:PASSWORD@HOST:PORT/DBNAME
 # ---------------------------------------------------------------------------
 
+# Bump this whenever init_db() creates or changes tables. The app re-runs
+# schema setup when it changes, even if the server process was not restarted.
+SCHEMA_VERSION = 3
+
 ITEMS_SNAPSHOT_CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "items_master_live.csv")
 APP_TIMEZONE = "Asia/Kolkata"
 
