@@ -760,6 +760,24 @@ def inject_theme():
         .stApp div[class*="st-key-returnables_pending_"] button > div, .stApp div[class*="st-key-return_issue_"] button > div {
             justify-content: flex-start !important; width: 100%;
         }
+        .stApp div[class*="st-key-pr_qp_"] label, .stApp div[class*="st-key-pr_qp_"] label p {
+            text-transform: none !important; letter-spacing: normal !important; font-size: 0.9rem !important;
+            font-weight: 500 !important;
+        }
+        .pr-bar { background: #f0fdfa; border: 1px solid #99d5cd; border-radius: 12px; padding: 0.6rem 0.9rem;
+                  color: #0f172a; font-size: 0.95rem; }
+        .pr-bar-empty { background: #f8fafc; border-color: #e2e8f0; color: #64748b; }
+        .pv-sheet { border: 1px solid #0f172a; border-radius: 6px; background: #fff; padding: 0.9rem 1rem; margin: 0.6rem 0; }
+        .pv-head { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 2px solid #0f172a;
+                   padding-bottom: 0.4rem; margin-bottom: 0.6rem; font-size: 0.95rem; }
+        .pv-head span { font-size: 0.75rem; color: #b45309; font-weight: 700; text-transform: uppercase; }
+        .pv-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.3rem 1rem; margin-bottom: 0.7rem; }
+        .pv-grid div { font-size: 0.85rem; } .pv-grid span { color: #64748b; margin-right: 0.4rem; }
+        .pv-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+        .pv-table th, .pv-table td { border: 1px solid #cbd5e1; padding: 0.3rem 0.45rem; text-align: left; vertical-align: top; }
+        .pv-table th { background: #f1f5f9; } .pv-table td.n { text-align: right; }
+        .pv-code { color: #64748b; font-size: 0.72rem; }
+        .pv-foot { margin-top: 0.5rem; font-size: 0.85rem; color: #334155; font-weight: 600; }
         /* PR builder text */
         .step-title { display: flex; align-items: center; gap: 0.55rem; font-weight: 800; color: #0f172a;
                       font-size: 1rem; margin: 1rem 0 0.45rem 0; }
@@ -2670,8 +2688,8 @@ def alerts_page(conn):
         f"{len(not_ordered)} not on any PR yet."
     )
     if st.session_state.get("role") == "manager" and not_ordered:
-        if st.button(f"🧾  Raise PR for the {len(not_ordered)} item(s) not yet ordered", key="alerts_raise_pr", type="primary"):
-            prefill_pr_with_low_stock(conn)
+        if st.button(f"🧾  Choose items for a PR ({len(not_ordered)} not yet ordered)", key="alerts_raise_pr", type="primary"):
+            st.session_state["pr_quick_mode"] = "low"
             st.session_state["pr_view_next"] = "New PR"
             go_to_section(PR_NAV)
     df = pd.DataFrame(
@@ -2985,126 +3003,96 @@ def _stock_badge(p):
     return f"<span class='cb cb-ok'>{qty} {esc(unit)}</span>"
 
 
-@st.fragment
-def pr_builder_fragment():
-    # Runs as a fragment: adding items and pressing + / − only redraws the builder.
-    with db_session() as conn:
-        _pr_builder(conn)
+def _quick_candidates(mode, parts, requests, by_code):
+    low = low_stock_from_parts(parts)
+    if mode == "out":
+        return [p for p in low if int(p.get("quantity") or 0) <= 0]
+    if mode == "low":
+        return low
+    if mode == "req":
+        return [by_code[r["part_id"]] for r in requests if r["part_id"] in by_code]
+    return []
 
 
-def _pr_builder(conn):
-    parts = all_parts(conn)
-    by_code = {p["part_id"]: p for p in parts}
-    oo = on_order(conn)
-    draft = _pr_draft()
-    req_ids = st.session_state.setdefault("pr_req_ids", {})
-    requests = _cached_requests(conn, data_version())
-
-    # drop items that no longer exist
-    for pid in [p for p in draft if p not in by_code]:
-        _cart_remove(pid)
-
-    notice = st.session_state.pop("pr_new_notice", None)
-    if notice:
-        st.toast(notice, icon="🧾")
-
-    # ── 1. find & add ──
-    st.markdown("<div class='step-title'><span>1</span> Add items</div>", unsafe_allow_html=True)
-    low = [p for p in low_stock_from_parts(parts)]
-    out = [p for p in low if int(p.get("quantity") or 0) <= 0]
-    q1, q2, q3 = st.columns(3)
-    if q1.button(f"Low stock ({len(low)})", key="pr_add_low", icon=":material/bolt:", width="stretch",
-                 help="Adds every item at or below its minimum, except items already on an open PR"):
-        a, sk = _cart_add_many(low, oo=oo)
-        st.session_state["pr_new_notice"] = f"Added {a} item(s)" + (f", skipped {sk} already on order" if sk else "")
-        st.rerun(scope="fragment")
-    if q2.button(f"Out of stock ({len(out)})", key="pr_add_out", icon=":material/error:", width="stretch"):
-        a, sk = _cart_add_many(out, oo=oo)
-        st.session_state["pr_new_notice"] = f"Added {a} item(s)" + (f", skipped {sk} already on order" if sk else "")
-        st.rerun(scope="fragment")
-    if q3.button(f"Floor requests ({len(requests)})", key="pr_add_reqs", icon=":material/forum:", width="stretch",
-                 disabled=not requests):
-        for r in requests:
-            if r["part_id"] in by_code:
-                if r["part_id"] not in draft:
-                    _cart_add(r["part_id"], int(r["qty"]))
-                req_ids[r["id"]] = r["part_id"]
-        st.session_state["pr_new_notice"] = f"Added {len(requests)} floor request(s)"
-        st.rerun(scope="fragment")
-
-    term = st.text_input(
-        "Search item", key="pr_search", placeholder="🔍  Type any part of the name, code or size — e.g. m10 x16, r25 ballscrew",
-        label_visibility="collapsed",
-    )
-    if term.strip():
-        results = search_parts([p for p in parts if p.get("active")], term, limit=12)
-        if not results:
-            st.info("No item matches. Add it in Master first if it's a new item.")
-        with st.container(border=True):
-            for p in results:
+def _quick_pick_panel(mode, parts, requests, by_code, oo, draft, req_ids):
+    """Tick list: nothing is added until the manager ticks items and presses Add."""
+    titles = {"low": "Low-stock items", "out": "Out-of-stock items", "req": "Requests from the floor"}
+    cands = _quick_candidates(mode, parts, requests, by_code)
+    req_by_part = {}
+    for r in requests:
+        req_by_part.setdefault(r["part_id"], []).append(r)
+    with st.container(border=True):
+        h1, h2, h3 = st.columns([0.5, 0.25, 0.25], vertical_alignment="center")
+        h1.markdown(f"**{titles[mode]}** — tick the ones to order")
+        if h2.button("Tick all", key=f"pr_qp_all_{mode}", width="stretch"):
+            for p in cands:
+                st.session_state[f"pr_qp_{mode}_{p['part_id']}"] = p["part_id"] not in draft
+            st.rerun(scope="fragment")
+        if h3.button("Untick all", key=f"pr_qp_none_{mode}", width="stretch"):
+            for p in cands:
+                st.session_state[f"pr_qp_{mode}_{p['part_id']}"] = False
+            st.rerun(scope="fragment")
+        if not cands:
+            st.caption("Nothing in this list right now.")
+        ticked = []
+        with st.container(height=min(360, 60 + 44 * max(1, len(cands))), border=False):
+            for p in cands:
                 pid = p["part_id"]
-                c1, c2 = st.columns([0.8, 0.2], vertical_alignment="center")
-                order_txt = f" · 🚚 {on_order_text(oo.get(pid))}" if pid in oo else ""
-                in_cart = f" · <b>in PR: {draft[pid]}</b>" if pid in draft else ""
-                c1.markdown(
-                    f"<div class='res-line'><b>{esc(p['name'])}</b> <span class='res-code'>{esc(pid)}</span>"
-                    f"<div class='res-meta'>{_stock_badge(p)} Min {int(p.get('min_level') or 0)}{esc(order_txt)}{in_cart}</div></div>",
-                    unsafe_allow_html=True,
-                )
-                c2.button("Add", key=f"pr_add_{pid}", icon=":material/add:", type="primary", width="stretch",
-                          on_click=_cart_add, args=(pid, _suggest_qty(p) if pid not in draft else 1))
-
-    # ── 2. the PR lines ──
-    st.markdown(
-        f"<div class='step-title'><span>2</span> Check quantities "
-        f"<small>{len(draft)} item(s)</small></div>",
-        unsafe_allow_html=True,
-    )
-    if not draft:
-        st.caption("No items yet — search above or use the quick buttons.")
-    else:
-        history = _cached_purchase_history(conn, data_version(), tuple(sorted(draft)))
-        dupes = 0
-        with st.container(border=True):
-            for pid in list(draft):
-                p = by_code[pid]
-                key = f"pr_q_{pid}"
-                if key not in st.session_state:
-                    st.session_state[key] = draft[pid]
-                meta = [f"Stock {int(p.get('quantity') or 0)}", f"Min {int(p.get('min_level') or 0)}"]
+                notes = [f"stock {int(p.get('quantity') or 0)} / min {int(p.get('min_level') or 0)}",
+                         f"suggest {_suggest_qty(p)}"]
                 if pid in oo:
-                    dupes += 1
-                    meta.append(f"⚠ already {on_order_text(oo[pid])}")
-                h = history.get(pid) or {}
-                if h.get("rate") or h.get("vendor_name"):
-                    last = "Last: " + " ".join(x for x in [
-                        f"₹{float(h['rate']):,.2f}" if h.get("rate") else "", h.get("vendor_name") or ""] if x)
-                    meta.append(last)
-                c1, c2, c3, c4, c5 = st.columns([0.55, 0.09, 0.15, 0.09, 0.12], vertical_alignment="center")
-                c1.markdown(
-                    f"<div class='res-line'><b>{esc(p['name'])}</b> <span class='res-code'>{esc(pid)}</span>"
-                    f"<div class='res-meta'>{esc(' · '.join(meta))}</div></div>",
-                    unsafe_allow_html=True,
-                )
-                c2.button("−", key=f"pr_minus_{pid}", on_click=_cart_step, args=(pid, -1), width="stretch",
-                          disabled=draft[pid] <= 1, help="One less")
-                c3.number_input("Qty", min_value=1, step=1, key=key, on_change=_cart_set, args=(pid,),
-                                label_visibility="collapsed")
-                c4.button("＋", key=f"pr_plus_{pid}", on_click=_cart_step, args=(pid, 1), width="stretch",
-                          help="One more")
-                c5.button("", key=f"pr_del_{pid}", icon=":material/delete:", on_click=_cart_remove, args=(pid,),
-                          width="stretch", help="Remove from PR")
-        if dupes:
-            st.warning(f"⚠ {dupes} item(s) are already on an open PR — check before ordering again.")
-        st.button("Clear all items", key="pr_clear", icon=":material/remove_shopping_cart:", on_click=_cart_clear)
+                    notes.append(f"⚠ already {on_order_text(oo[pid])}")
+                if pid in draft:
+                    notes.append("✓ already in this PR")
+                if mode == "req":
+                    notes = [f"{r['requested_by']} asked {r['qty']} {r.get('unit') or ''}".strip()
+                             + (f" for {r['reason']}" if r.get("reason") else "") for r in req_by_part.get(pid, [])] + notes[:1]
+                label = f"**{p['name']}** · {pid}  \n{' · '.join(notes)}"
+                if st.checkbox(label, key=f"pr_qp_{mode}_{pid}", disabled=pid in draft):
+                    ticked.append(p)
+        a1, a2 = st.columns([0.7, 0.3])
+        if a1.button(f"Add {len(ticked)} ticked item(s) to the PR", key=f"pr_qp_add_{mode}", type="primary",
+                     icon=":material/add:", width="stretch", disabled=not ticked):
+            for p in ticked:
+                pid = p["part_id"]
+                if mode == "req":
+                    qty = sum(int(r["qty"]) for r in req_by_part.get(pid, [])) or _suggest_qty(p)
+                    for r in req_by_part.get(pid, []):
+                        req_ids[r["id"]] = pid
+                else:
+                    qty = _suggest_qty(p)
+                _cart_add(pid, qty)
+                st.session_state.pop(f"pr_qp_{mode}_{pid}", None)
+            st.session_state["pr_quick_mode"] = None
+            st.session_state["pr_new_notice"] = f"Added {len(ticked)} item(s)"
+            st.rerun(scope="fragment")
+        if a2.button("Close", key=f"pr_qp_close_{mode}", width="stretch"):
+            st.session_state["pr_quick_mode"] = None
+            st.rerun(scope="fragment")
 
-    # ── 3. details & raise ──
-    st.markdown("<div class='step-title'><span>3</span> Details</div>", unsafe_allow_html=True)
-    d1, d2 = st.columns([0.5, 0.5])
-    requester = d1.text_input("Requested by *", key="pr_requester", value=st.session_state.get("pr_last_requester", ""),
+
+@st.dialog("Preview purchase requisition", width="large")
+def show_pr_review_dialog():
+    with db_session() as conn:
+        _pr_review(conn)
+
+
+def _pr_review(conn):
+    draft = _pr_draft()
+    if not draft:
+        st.info("The PR has no items.")
+        return
+    by_code = {p["part_id"]: p for p in all_parts(conn)}
+    oo = on_order(conn)
+    req_ids = st.session_state.get("pr_req_ids") or {}
+
+    st.caption("Check the sheet, fill in the details and confirm. Nothing is saved until you press Confirm.")
+    d1, d2 = st.columns(2)
+    requester = d1.text_input("Requested by *", key="pr_requester",
+                              value=st.session_state.get("pr_last_requester", ""),
                               placeholder="Full name — saved as proof")
     reason = d2.text_input("Reason / job / machine", key="pr_reason", placeholder="e.g. UTM-120 for XYZ Ltd")
-    d3, d4 = st.columns([0.6, 0.4])
+    d3, d4 = st.columns([0.62, 0.38])
     with d3:
         st.session_state.setdefault("pr_due_quick", "1 week")
         due_choice = st.segmented_control("Required by *", list(PR_DUE_CHOICES), key="pr_due_quick") or "1 week"
@@ -3113,16 +3101,42 @@ def _pr_builder(conn):
                                         format="DD/MM/YYYY", key="pr_due_date", label_visibility="collapsed")
         else:
             required_by = _today_date() + dt.timedelta(days=PR_DUE_CHOICES[due_choice])
-            st.caption(f"Required by **{required_by:%a, %d %b %Y}**")
     with d4:
         st.session_state.setdefault("pr_priority", "Normal")
         priority = st.segmented_control("Priority", list(PR_PRIORITIES), key="pr_priority") or "Normal"
 
-    total_qty = sum(draft.values())
-    if st.button(
-        f"Raise PR — {len(draft)} item(s), {total_qty} units" if draft else "Raise PR",
-        key="pr_raise", type="primary", icon=":material/send:", width="stretch", disabled=not draft,
-    ):
+    # the sheet as it will be printed
+    rows = "".join(
+        f"<tr><td>{i}</td><td>{esc(by_code[pid]['name'])}<div class='pv-code'>{esc(pid)}</div></td>"
+        f"<td class='n'><b>{qty}</b></td><td>{esc(by_code[pid].get('unit') or 'Nos')}</td>"
+        f"<td class='n'>{int(by_code[pid].get('quantity') or 0)}</td>"
+        f"<td>{'⚠ ' + esc(on_order_text(oo[pid])) if pid in oo else ''}</td></tr>"
+        for i, (pid, qty) in enumerate(draft.items(), start=1) if pid in by_code
+    )
+    total = sum(draft.values())
+    st.markdown(
+        f"""
+        <div class="pv-sheet">
+          <div class="pv-head"><b>EQVIMECH PVT. LTD. — PURCHASE REQUISITION</b><span>Draft · not saved yet</span></div>
+          <div class="pv-grid">
+            <div><span>Requested by</span><b>{esc(requester.strip() or '—')}</b></div>
+            <div><span>Required by</span><b>{required_by:%d-%b-%Y}</b></div>
+            <div><span>Priority</span><b>{esc(priority)}</b></div>
+            <div><span>Reason</span><b>{esc(reason.strip() or '—')}</b></div>
+          </div>
+          <table class="pv-table">
+            <tr><th>#</th><th>Item</th><th>Qty</th><th>Unit</th><th>Stock now</th><th>Note</th></tr>
+            {rows}
+          </table>
+          <div class="pv-foot">{len(draft)} item(s) · {total} unit(s)
+            {f" · includes {len(req_ids)} floor request(s)" if req_ids else ""}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    c1, c2 = st.columns([0.62, 0.38])
+    if c1.button("Confirm & raise PR", key="pr_confirm", type="primary", icon=":material/send:", width="stretch"):
         try:
             pr_no = create_pr(
                 conn,
@@ -3143,7 +3157,125 @@ def _pr_builder(conn):
         if found:
             st.session_state["pr_share_id"] = found[0]["id"]
         st.session_state["pr_view_next"] = "Open PRs"
-        st.rerun(scope="app")
+        st.rerun()
+    if c2.button("Back to edit", key="pr_back", icon=":material/edit:", width="stretch"):
+        st.rerun()
+
+
+@st.fragment
+def pr_builder_fragment():
+    # Runs as a fragment: adding items and pressing + / − only redraws the builder.
+    with db_session() as conn:
+        _pr_builder(conn)
+
+
+def _pr_builder(conn):
+    parts = all_parts(conn)
+    by_code = {p["part_id"]: p for p in parts}
+    oo = on_order(conn)
+    draft = _pr_draft()
+    req_ids = st.session_state.setdefault("pr_req_ids", {})
+    requests = _cached_requests(conn, data_version())
+
+    for pid in [p for p in draft if p not in by_code]:
+        _cart_remove(pid)
+
+    notice = st.session_state.pop("pr_new_notice", None)
+    if notice:
+        st.toast(notice, icon="🧾")
+
+    # ── top bar: what's in the PR + the raise button (always in view) ──
+    total_qty = sum(draft.values())
+    bar1, bar2 = st.columns([0.62, 0.38], vertical_alignment="center")
+    bar1.markdown(
+        f"<div class='pr-bar'><b>{len(draft)}</b> item(s) · <b>{total_qty}</b> unit(s) in this PR"
+        + (f" · {len(req_ids)} floor request(s)" if req_ids else "")
+        + "</div>" if draft else "<div class='pr-bar pr-bar-empty'>No items yet — search below or pick from the lists</div>",
+        unsafe_allow_html=True,
+    )
+    if bar2.button("Review & raise PR", key="pr_review", type="primary", icon=":material/visibility:",
+                   width="stretch", disabled=not draft):
+        show_pr_review_dialog()
+
+    # ── add items ──
+    term = st.text_input(
+        "Search item", key="pr_search",
+        placeholder="🔍  Search to add — any part of name, code or size, e.g. m10 x16, r25 ballscrew",
+        label_visibility="collapsed",
+    )
+    low = low_stock_from_parts(parts)
+    out = [p for p in low if int(p.get("quantity") or 0) <= 0]
+    mode = st.session_state.get("pr_quick_mode")
+    q1, q2, q3 = st.columns(3)
+    for col, key, label, icon, m, n in (
+        (q1, "pr_open_low", "Choose from low stock", ":material/bolt:", "low", len(low)),
+        (q2, "pr_open_out", "Choose from out of stock", ":material/error:", "out", len(out)),
+        (q3, "pr_open_reqs", "Choose floor requests", ":material/forum:", "req", len(requests)),
+    ):
+        if col.button(f"{label} ({n})", key=key, icon=icon, width="stretch", disabled=not n,
+                      type="primary" if mode == m else "secondary"):
+            st.session_state["pr_quick_mode"] = None if mode == m else m
+            st.rerun(scope="fragment")
+    if mode in ("low", "out", "req"):
+        _quick_pick_panel(mode, parts, requests, by_code, oo, draft, req_ids)
+
+    if term.strip():
+        results = search_parts([p for p in parts if p.get("active")], term, limit=12)
+        if not results:
+            st.info("No item matches. Add it in Master first if it's a new item.")
+        with st.container(border=True):
+            for p in results:
+                pid = p["part_id"]
+                c1, c2 = st.columns([0.8, 0.2], vertical_alignment="center")
+                order_txt = f" · 🚚 {on_order_text(oo.get(pid))}" if pid in oo else ""
+                in_cart = f" · <b>in PR: {draft[pid]}</b>" if pid in draft else ""
+                c1.markdown(
+                    f"<div class='res-line'><b>{esc(p['name'])}</b> <span class='res-code'>{esc(pid)}</span>"
+                    f"<div class='res-meta'>{_stock_badge(p)} Min {int(p.get('min_level') or 0)}{esc(order_txt)}{in_cart}</div></div>",
+                    unsafe_allow_html=True,
+                )
+                c2.button("Add", key=f"pr_add_{pid}", icon=":material/add:", type="primary", width="stretch",
+                          on_click=_cart_add, args=(pid, _suggest_qty(p) if pid not in draft else 1))
+
+    # ── lines ──
+    if draft:
+        st.markdown(
+            f"<div class='step-title'>Items in this PR <small>{len(draft)}</small></div>",
+            unsafe_allow_html=True,
+        )
+        history = _cached_purchase_history(conn, data_version(), tuple(sorted(draft)))
+        dupes = 0
+        with st.container(border=True):
+            for pid in list(draft):
+                p = by_code[pid]
+                key = f"pr_q_{pid}"
+                if key not in st.session_state:
+                    st.session_state[key] = draft[pid]
+                meta = [f"Stock {int(p.get('quantity') or 0)}", f"Min {int(p.get('min_level') or 0)}"]
+                if pid in oo:
+                    dupes += 1
+                    meta.append(f"⚠ already {on_order_text(oo[pid])}")
+                h = history.get(pid) or {}
+                if h.get("rate") or h.get("vendor_name"):
+                    meta.append("Last: " + " ".join(x for x in [
+                        f"₹{float(h['rate']):,.2f}" if h.get("rate") else "", h.get("vendor_name") or ""] if x))
+                c1, c2, c3, c4, c5 = st.columns([0.55, 0.09, 0.15, 0.09, 0.12], vertical_alignment="center")
+                c1.markdown(
+                    f"<div class='res-line'><b>{esc(p['name'])}</b> <span class='res-code'>{esc(pid)}</span>"
+                    f"<div class='res-meta'>{esc(' · '.join(meta))}</div></div>",
+                    unsafe_allow_html=True,
+                )
+                c2.button("−", key=f"pr_minus_{pid}", on_click=_cart_step, args=(pid, -1), width="stretch",
+                          disabled=draft[pid] <= 1, help="One less")
+                c3.number_input("Qty", min_value=1, step=1, key=key, on_change=_cart_set, args=(pid,),
+                                label_visibility="collapsed")
+                c4.button("＋", key=f"pr_plus_{pid}", on_click=_cart_step, args=(pid, 1), width="stretch",
+                          help="One more")
+                c5.button("", key=f"pr_del_{pid}", icon=":material/delete:", on_click=_cart_remove, args=(pid,),
+                          width="stretch", help="Remove from PR")
+        if dupes:
+            st.warning(f"⚠ {dupes} item(s) are already on an open PR — check before ordering again.")
+        st.button("Clear all items", key="pr_clear", icon=":material/remove_shopping_cart:", on_click=_cart_clear)
 
 
 def _pr_new_view(conn):
@@ -3550,11 +3682,8 @@ def _pr_requests_view(conn):
     ])
     st.dataframe(df, hide_index=True, width="stretch")
     c1, c2 = st.columns(2)
-    if c1.button("➕  Put all requests into a new PR", key="pr_req_all", type="primary", width="stretch"):
-        ids = st.session_state.setdefault("pr_req_ids", {})
-        for r in reqs:
-            _cart_add(r["part_id"], int(r["qty"]))
-            ids[r["id"]] = r["part_id"]
+    if c1.button("➕  Choose requests for a new PR", key="pr_req_all", type="primary", width="stretch"):
+        st.session_state["pr_quick_mode"] = "req"
         st.session_state["pr_view_next"] = "New PR"
         st.rerun()
     with c2.popover("Dismiss a request", width="stretch"):
