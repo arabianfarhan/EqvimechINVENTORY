@@ -3162,19 +3162,54 @@ EVENT_LABELS = {
 }
 
 
+def _short_event(e, pr):
+    """One short line per action for the printed sheet (items are already listed above)."""
+    import re as _re
+    d = str(e.get("detail") or "")
+    ev = e.get("event")
+    if ev == "raised":
+        txt = f"Required by {fmt_date(pr.get('required_by'))}"
+        if pr.get("priority") and pr["priority"] != "Normal":
+            txt += f" · {pr['priority']}"
+        return txt
+    if ev == "ordered":
+        bits = [b.strip() for b in d.split("·")]
+        bits[0] = bits[0].replace("Ordered, expected", "Expected")
+        bits = [b.replace("vendor ", "") for b in bits]
+        bits = [("" if b[7:].upper().startswith("PO") else "PO ") + b[7:] if b.startswith("PO/ref ") else b for b in bits]
+        return " · ".join(bits[:3])
+    if ev == "received":
+        grn = _re.search(r"GRN ([^·]+)", d)
+        n_items = len(_re.findall(r"×", d.split("·")[0]))
+        ref = grn.group(1).strip() if grn else ""
+        if ref and not ref.upper().startswith(("GRN", "DC", "INV", "CHALLAN")):
+            ref = "GRN " + ref
+        txt = f"{n_items} item(s) received" + (f" · {ref}" if ref else "")
+        txt += " · complete" if "PR complete" in d else " · balance pending"
+        return txt
+    if ev == "date_changed":
+        d = d.replace("Expected date ", "Expected ")
+        return d if len(d) <= 90 else d[:87] + "…"
+    return d if len(d) <= 70 else d[:67] + "…"
+
+
 def pr_print_html(detail):
     pr, lines, events = detail["pr"], detail["lines"], detail["events"]
+    has_rate = any(l.get("rate") is not None for l in lines)
     rows = "".join(
         f"<tr><td>{i}</td><td>{esc(l['part_id'])}</td><td>{esc(l['part_name'])}</td>"
         f"<td class=n>{l['qty_requested']}</td><td>{esc(l['unit'])}</td><td class=n>{l['qty_received']}</td>"
         f"<td class=n>{l['qty_requested'] - l['qty_received']}</td>"
-        f"<td class=n>{'' if l.get('rate') is None else f'{float(l['rate']):,.2f}'}</td></tr>"
+        + (f"<td class=n>{'' if l.get('rate') is None else f'{float(l['rate']):,.2f}'}</td>" if has_rate else "")
+        + "</tr>"
         for i, l in enumerate(lines, start=1)
     )
+    rate_head = "<th>Rate</th>" if has_rate else ""
     trail = "".join(
         f"<tr><td>{fmt_ist(e['created_at'])}</td><td>{esc(EVENT_LABELS.get(e['event'], e['event']).split(' ', 1)[-1])}</td>"
-        f"<td>{esc(e['actor'])}</td><td>{esc(e['detail'])}</td></tr>"
+        f"<td>{esc(e['actor'])}</td><td>{esc(_short_event(e, pr))}</td></tr>"
         for e in events
+        if not (e["event"] == "note" and str(e.get("detail") or "").startswith("Includes request from"))
     )
     return f"""<!doctype html><html><head><meta charset="utf-8"><title>{esc(pr['pr_no'])}</title>
 <style>
@@ -3197,9 +3232,9 @@ def pr_print_html(detail):
 <tr><td class=lbl>Ordered on</td><td>{fmt_ist(pr.get('ordered_at')) or '-'}</td><td class=lbl>Expected</td><td>{fmt_date(pr.get('expected_date')) or '-'}</td></tr>
 <tr><td class=lbl>Reason</td><td colspan=3>{esc(pr.get('reason') or '-')}</td></tr>
 </table>
-<table><tr><th>#</th><th>Code</th><th>Item</th><th>Qty</th><th>Unit</th><th>Received</th><th>Pending</th><th>Rate</th></tr>{rows}</table>
-<b>Record of actions (from the app's permanent log)</b>
-<table><tr><th style="width:18%">Date &amp; time (IST)</th><th style="width:13%">Action</th><th style="width:15%">By</th><th>Details</th></tr>{trail}</table>
+<table><tr><th>#</th><th>Code</th><th>Item</th><th>Qty</th><th>Unit</th><th>Received</th><th>Pending</th>{rate_head}</tr>{rows}</table>
+<b>Action history</b>
+<table><tr><th style="width:20%">Date &amp; time</th><th style="width:14%">Action</th><th style="width:18%">By</th><th>Remarks</th></tr>{trail}</table>
 <div class="sign"><div>Requested by</div><div>Store / Purchase</div><div>Received by</div></div>
 <script>window.onload=function(){{window.print()}}</script>
 </body></html>"""
