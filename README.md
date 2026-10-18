@@ -26,10 +26,22 @@ streamlit run app.py
 - **Manager** - unlocked with `MANAGER_PASSWORD`; adds inward, returnables,
   item master, dashboard.
 
+## Searching
+
+Search is forgiving everywhere: spaces, dashes and word order don't matter, and letters/numbers can
+be typed together — `m10 x16`, `bolt 10x16`, `r25ballscrew` and `100 kn` all find the right items.
+Small spelling slips (`timing` vs `TIMMING`) are tolerated too.
+
+## Item Master editing
+
+Edit as many cells as you like, then press **Save changes** once (fast, nothing gets lost).
+Turn on "Save each edit immediately" if you prefer the old behaviour.
+
 ## Purchase requisitions (Manager → Purchase tab)
 
-- **New PR**: add items (or all low-stock items in one click), set quantities, requester name,
-  required-by date and priority. Warns if an item is already on an open PR.
+- **New PR**: search and tap **Add**, or add all low-stock / out-of-stock items / floor requests in one
+  tap. Adjust each line with − / ＋ or remove it. Requester is remembered; pick the required-by date with
+  one tap (Today, 3 days, 1 week…). Warns if an item is already on an open PR.
 - **Open PRs**: overdue PRs float to the top. Open one to mark it ordered (vendor, PO no.,
   rates and expected date are optional except the date), receive goods (partial deliveries stay
   pending), change the expected date with a reason, add notes, close short or cancel.

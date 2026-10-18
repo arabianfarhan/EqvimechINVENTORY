@@ -13,6 +13,7 @@ import psycopg2.errors
 import streamlit as st
 from st_keyup import st_keyup
 
+from search import row_matches, search_parts
 from db import (
     APP_TIMEZONE,
     SCHEMA_VERSION,
@@ -647,64 +648,138 @@ def inject_theme():
         }
 
         /* ── Buttons ── */
-        .stButton > button[kind="primary"] {
-            background: linear-gradient(135deg, rgba(20, 184, 166, 0.88), rgba(14, 116, 144, 0.76)) !important;
-            color: #ffffff !important;
-            border: 1px solid rgba(255, 255, 255, 0.22) !important;
-            border-radius: 16px !important;
-            backdrop-filter: blur(12px) !important;
-            -webkit-backdrop-filter: blur(12px) !important;
-            font-weight: 700 !important;
-            font-size: 0.93rem !important;
-            min-height: 2.75rem !important;
-            width: 100% !important;
-            transition: background 0.15s, box-shadow 0.15s !important;
-            box-shadow: 0 14px 28px rgba(13,148,136,0.18) !important;
-        }
-        .stButton > button[kind="primary"]:hover {
-            background: linear-gradient(135deg, rgba(15, 118, 110, 0.92), rgba(8, 145, 178, 0.84)) !important;
-            box-shadow: 0 18px 36px rgba(13,148,136,0.22) !important;
-        }
-        .stButton > button[kind="secondary"] {
-            background: var(--glass-bg-strong) !important;
-            color: var(--glass-text) !important;
-            border: 1px solid var(--glass-stroke) !important;
-            border-radius: 16px !important;
-            backdrop-filter: var(--glass-blur) !important;
-            -webkit-backdrop-filter: var(--glass-blur) !important;
-            font-weight: 600 !important;
+        .stButton > button, .stDownloadButton > button, .stFormSubmitButton > button, .stLinkButton > a {
+            border-radius: 12px !important;
+            font-weight: 650 !important;
             font-size: 0.92rem !important;
-            min-height: 3rem !important;
-            width: 100% !important;
-            justify-content: flex-start !important;
-            text-align: left !important;
+            min-height: 2.6rem !important;
+            justify-content: center !important;
+            text-align: center !important;
             white-space: normal !important;
-            line-height: 1.35 !important;
-            box-shadow: var(--glass-shadow-soft) !important;
+            line-height: 1.3 !important;
+            backdrop-filter: none !important;
+            -webkit-backdrop-filter: none !important;
+            transition: transform .08s ease, box-shadow .15s ease, background .15s ease, border-color .15s ease !important;
+        }
+        .stButton > button:active, .stDownloadButton > button:active, .stFormSubmitButton > button:active,
+        .stLinkButton > a:active { transform: translateY(1px) scale(0.99) !important; }
+
+        .stButton > button[kind="primary"], .stFormSubmitButton > button {
+            background: linear-gradient(180deg, #14b8a6 0%, #0f766e 100%) !important;
+            color: #ffffff !important;
+            border: 1px solid #0f766e !important;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.28), 0 6px 14px rgba(15,118,110,0.25) !important;
+        }
+        .stButton > button[kind="primary"]:hover, .stFormSubmitButton > button:hover {
+            background: linear-gradient(180deg, #0d9488 0%, #115e59 100%) !important;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.28), 0 10px 20px rgba(15,118,110,0.32) !important;
+            transform: translateY(-1px);
+        }
+        .stButton > button[kind="primary"] *, .stFormSubmitButton > button * { color: #ffffff !important; }
+        .stButton > button:disabled, .stButton > button[kind="primary"]:disabled {
+            background: #e2e8f0 !important; border-color: #e2e8f0 !important; color: #94a3b8 !important;
+            box-shadow: none !important; transform: none !important;
+        }
+        .stButton > button[kind="primary"]:disabled * { color: #94a3b8 !important; }
+
+        .stButton > button[kind="secondary"] {
+            background: #ffffff !important;
+            color: #0f172a !important;
+            border: 1px solid #d6dee6 !important;
+            box-shadow: 0 1px 2px rgba(15,23,42,0.06) !important;
         }
         .stButton > button[kind="secondary"]:hover {
-            border-color: rgba(20, 184, 166, 0.40) !important;
-            color: var(--glass-accent-strong) !important;
-            background: rgba(255, 255, 255, 0.56) !important;
+            border-color: #14b8a6 !important;
+            color: #0f766e !important;
+            box-shadow: 0 6px 14px rgba(15,23,42,0.08) !important;
+            transform: translateY(-1px);
         }
-        .stFormSubmitButton > button {
-            background: linear-gradient(135deg, rgba(20, 184, 166, 0.88), rgba(14, 116, 144, 0.76)) !important;
-            color: #ffffff !important;
-            border: 1px solid rgba(255, 255, 255, 0.22) !important;
-            border-radius: 16px !important;
-            font-weight: 700 !important;
-            min-height: 2.75rem !important;
-        }
-        .stFormSubmitButton > button:hover { background: linear-gradient(135deg, rgba(15, 118, 110, 0.92), rgba(8, 145, 178, 0.84)) !important; }
         .stDownloadButton > button {
-            background: var(--glass-bg-strong) !important;
-            color: var(--glass-accent-strong) !important;
-            border: 1px solid rgba(20, 184, 166, 0.28) !important;
-            border-radius: 16px !important;
-            backdrop-filter: var(--glass-blur) !important;
-            -webkit-backdrop-filter: var(--glass-blur) !important;
-            font-weight: 600 !important;
-            box-shadow: var(--glass-shadow-soft) !important;
+            background: #ffffff !important;
+            color: #0f766e !important;
+            border: 1px solid #99d5cd !important;
+            box-shadow: 0 1px 2px rgba(15,23,42,0.06) !important;
+        }
+        .stDownloadButton > button:hover { background: #f0fdfa !important; border-color: #14b8a6 !important; }
+        /* WhatsApp share */
+        .stLinkButton > a {
+            background: #1faa59 !important;
+            color: #ffffff !important;
+            border: 1px solid #178a48 !important;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.25), 0 6px 14px rgba(23,138,72,0.25) !important;
+        }
+        .stLinkButton > a:hover { background: #178a48 !important; }
+        .stLinkButton > a * { color: #ffffff !important; }
+
+        /* item lists: left aligned rows with a teal edge on hover */
+        .stApp div[class*="st-key-pick_browser_"] button, .stApp div[class*="st-key-items_browser_"] button,
+        .stApp div[class*="st-key-deposit_browser_"] button, .stApp div[class*="st-key-pr_open_"] button,
+        .stApp div[class*="st-key-returnables_pending_"] button, .stApp div[class*="st-key-return_issue_"] button {
+            justify-content: flex-start !important;
+            text-align: left !important;
+            min-height: 3rem !important;
+            border-left: 4px solid #cbd5e1 !important;
+            padding-left: 0.9rem !important;
+        }
+        .stApp div[class*="st-key-pick_browser_"] button:hover, .stApp div[class*="st-key-items_browser_"] button:hover,
+        .stApp div[class*="st-key-deposit_browser_"] button:hover, .stApp div[class*="st-key-pr_open_"] button:hover,
+        .stApp div[class*="st-key-returnables_pending_"] button:hover, .stApp div[class*="st-key-return_issue_"] button:hover {
+            border-left-color: #14b8a6 !important;
+        }
+        .stApp div[class*="st-key-pick_browser_"] button p, .stApp div[class*="st-key-items_browser_"] button p,
+        .stApp div[class*="st-key-deposit_browser_"] button p, .stApp div[class*="st-key-pr_open_"] button p,
+        .stApp div[class*="st-key-returnables_pending_"] button p { text-align: left !important; }
+        /* qty boxes in the PR builder: the big − / ＋ buttons replace the tiny arrows */
+        .stApp div[class*="st-key-pr_q_"] button { display: none !important; }
+        .stApp div[class*="st-key-pr_q_"] input { text-align: center !important; font-weight: 700 !important; font-size: 1rem !important; }
+
+        /* PR builder step buttons (+ / − / delete / add) */
+        .stApp div[class*="st-key-pr_minus_"] button, .stApp div[class*="st-key-pr_plus_"] button,
+        .stApp div[class*="st-key-pr_del_"] button, .stApp div[class*="st-key-pr_add_"] button {
+            justify-content: center !important; text-align: center !important;
+            min-height: 2.5rem !important; border-left-width: 1px !important; padding: 0 0.4rem !important;
+        }
+        .stApp div[class*="st-key-pr_minus_"] button p, .stApp div[class*="st-key-pr_plus_"] button p {
+            font-size: 1.25rem !important; font-weight: 800 !important; text-align: center !important;
+        }
+        .stApp div[class*="st-key-pr_minus_"] button, .stApp div[class*="st-key-pr_plus_"] button {
+            color: #0f766e !important; border-color: #99d5cd !important; background: #f0fdfa !important;
+        }
+        .stApp div[class*="st-key-pr_del_"] button { color: #b91c1c !important; border-color: #fecaca !important; background: #fff5f5 !important; }
+        .stApp div[class*="st-key-pr_del_"] button:hover { background: #fee2e2 !important; border-color: #f87171 !important; }
+        .stApp div[class*="st-key-pr_add_low"] button, .stApp div[class*="st-key-pr_add_out"] button,
+        .stApp div[class*="st-key-pr_add_reqs"] button { min-height: 2.6rem !important; }
+
+        .stApp div[class*="st-key-pick_browser_"] button > div, .stApp div[class*="st-key-items_browser_"] button > div,
+        .stApp div[class*="st-key-deposit_browser_"] button > div, .stApp div[class*="st-key-pr_open_"] button > div,
+        .stApp div[class*="st-key-returnables_pending_"] button > div, .stApp div[class*="st-key-return_issue_"] button > div {
+            justify-content: flex-start !important; width: 100%;
+        }
+        /* PR builder text */
+        .step-title { display: flex; align-items: center; gap: 0.55rem; font-weight: 800; color: #0f172a;
+                      font-size: 1rem; margin: 1rem 0 0.45rem 0; }
+        .step-title span { display: inline-flex; width: 1.6rem; height: 1.6rem; border-radius: 50%;
+                           align-items: center; justify-content: center; background: #0f766e; color: #fff;
+                           font-size: 0.85rem; }
+        .step-title small { font-weight: 600; color: #64748b; font-size: 0.8rem; }
+        .res-line { line-height: 1.3; }
+        .res-code { color: #64748b; font-size: 0.78rem; margin-left: 0.3rem; }
+        .res-meta { color: #475569; font-size: 0.8rem; margin-top: 0.15rem; }
+        .cb { display: inline-block; padding: 0.05rem 0.45rem; border-radius: 999px; font-weight: 700;
+              font-size: 0.74rem; margin-right: 0.35rem; }
+        .cb-ok { background: #dcfce7; color: #166534; }
+        .cb-low { background: #ffedd5; color: #9a3412; }
+        .cb-out { background: #fee2e2; color: #b91c1c; }
+        .unsaved { background: #fffbeb; border: 1px solid #fcd34d; color: #92400e; border-radius: 12px;
+                   padding: 0.55rem 0.8rem; font-size: 0.9rem; }
+
+        /* lighter rendering: no blur on inputs/cards (smoother on phones) */
+        .stTextInput input, .stTextArea textarea, .stNumberInput input, div[data-baseweb="select"] > div,
+        .item-card, .metric-card, div[data-baseweb="tab-list"], div[data-testid="stButtonGroup"] {
+            backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
+        }
+        .stTextInput input, .stTextArea textarea, .stNumberInput input, div[data-baseweb="select"] > div {
+            background: #ffffff !important; border-color: #d6dee6 !important;
         }
 
         /* ── Item card ── */
@@ -942,13 +1017,6 @@ def inject_theme():
         .done-title { font-size: 1.35rem; font-weight: 800; color: #15803d; margin-top: 0.4rem; }
         .done-detail { font-size: 1rem; color: #166534; margin-top: 0.5rem; }
         .done-note { margin-top: 0.6rem; font-size: 0.9rem; color: #b45309; font-weight: 700; }
-        /* item list buttons: left aligned, compact on phones */
-        div[data-testid="stVerticalBlockBorderWrapper"] .stButton > button[kind="secondary"] {
-            justify-content: flex-start !important; text-align: left !important;
-        }
-        div[data-testid="stVerticalBlockBorderWrapper"] .stButton > button[kind="secondary"] p {
-            text-align: left !important;
-        }
         @media (max-width: 640px) {
             .stButton > button[kind="secondary"] { min-height: 2.6rem !important; font-size: 0.88rem !important; }
             .page-title { font-size: 1.05rem; }
@@ -1125,16 +1193,8 @@ def sidebar_identity(conn):
 
 
 def filter_parts(parts, query):
-    q = query.strip().lower()
-    if not q:
-        return parts
-    return [
-        p for p in parts
-        if q in (p["name"] or "").lower()
-        or q in (p["part_id"] or "").lower()
-        or q in (p["description"] or "").lower()
-        or q in (p["location"] or "").lower()
-    ]
+    """Forgiving search: ignores spaces/punctuation and word order; best matches first."""
+    return search_parts(parts, query or "")
 
 
 def part_list_label(part):
@@ -1248,14 +1308,9 @@ def render_part_picker(parts, parts_all, search_key, dialog_key, button_prefix, 
 
     with st.container(height=460, border=True):
         if not matches:
-            q = search_term.strip().lower()
             inactive_matches = []
-            if q:
-                for p in parts_all:
-                    if not p.get("active") and any(
-                        q in str(p.get(f) or "").lower() for f in ("name", "part_id", "description", "location")
-                    ):
-                        inactive_matches.append(p)
+            if search_term.strip():
+                inactive_matches = search_parts([p for p in parts_all if not p.get("active")], search_term)
             if inactive_matches:
                 st.info(
                     f"No active items matched. {len(inactive_matches)} inactive item(s) match — "
@@ -1898,16 +1953,14 @@ MASTER_EDIT_COLUMNS = [
 
 
 def master_dataframe(parts, query, category, show_inactive):
-    q = (query or "").strip().lower()
+    pool = [
+        p for p in parts
+        if (show_inactive or p.get("active"))
+        and (category == "All" or normalize_category(p.get("category")) == category)
+    ]
     rows = []
-    for p in parts:
-        if not show_inactive and not p.get("active"):
-            continue
+    for p in search_parts(pool, query or ""):
         cat = normalize_category(p.get("category"))
-        if category != "All" and cat != category:
-            continue
-        if q and not any(q in str(p.get(f) or "").lower() for f in ("part_id", "name", "description", "location")):
-            continue
         rows.append(
             {
                 "id": int(p["id"]),
@@ -1940,6 +1993,7 @@ def _editor_pending(editor_key):
 
 def _master_signature(df):
     return tuple(tuple(r) for r in df.astype(object).where(df.notna(), "").itertuples(index=False, name=None))
+
 
 
 def _master_reload():
@@ -2005,8 +2059,8 @@ def _master_table(conn):
         editor_key = f"im_editor_{st.session_state['im_nonce']}"
 
     base_df = st.session_state["im_base_df"]
-    edited_df = st.data_editor(
-        base_df,
+    autosave = bool(st.session_state.get("im_autosave", False))
+    editor_args = dict(
         key=editor_key,
         width="stretch",
         hide_index=True,
@@ -2031,19 +2085,47 @@ def _master_table(conn):
             "active": st.column_config.CheckboxColumn("Active", width="small", default=True),
         },
     )
+    save_now = False
+    if autosave:
+        edited_df = st.data_editor(base_df, **editor_args)
+    else:
+        # Inside a form the table doesn't reload after every cell, so typing is
+        # instant and no edit can be lost; everything is saved in one go.
+        with st.form(f"im_form_{st.session_state.get('im_nonce', 0)}", border=False, enter_to_submit=False):
+            edited_df = st.data_editor(base_df, **editor_args)
+            f1, f2 = st.columns([0.68, 0.32], vertical_alignment="center")
+            f1.markdown(
+                "<div class='unsaved'>✏️ Edit as many cells as you like, then press <b>Save changes</b>. "
+                "Nothing is saved until you do.</div>",
+                unsafe_allow_html=True,
+            )
+            save_now = f2.form_submit_button("Save changes", type="primary", icon=":material/save:", width="stretch")
 
     status = st.container()
+    st.toggle(
+        "Save each edit immediately (slower)", key="im_autosave", value=False,
+        help="Off (recommended): edit freely, then press Save changes once.",
+    )
     signature = _master_signature(edited_df)
     if signature == st.session_state.get("im_committed_sig"):
         outdated = st.session_state.get("im_data_version") != data_version()
+        if save_now:
+            status.info("No changes to save.")
         status.caption(
-            f"{len(base_df)} item(s) shown · Edits save automatically when you leave a cell · "
-            "Add a new item with the ＋ at the bottom of the table."
+            f"{len(base_df)} item(s) shown · Add a new item with the ＋ at the bottom of the table or the Add new item button."
             + (" · Stock has changed elsewhere — press ↻ Refresh to see it." if outdated else "")
         )
         return
 
-    if st.session_state.get("im_failed_sig") == signature:
+    if not autosave and not save_now:
+        if st.session_state.get("im_failed_sig") == signature:
+            status.error(st.session_state.get("im_failed_msg", "Not saved."))
+        if status.button("Discard my unsaved edits", key="im_discard_all", icon=":material/undo:"):
+            _master_reload()
+            st.rerun(scope="fragment")
+        return
+
+    if st.session_state.get("im_failed_sig") == signature and not save_now:
         status.error(st.session_state.get("im_failed_msg", "Not saved."))
     else:
         try:
@@ -2090,7 +2172,7 @@ def _master_table(conn):
                 status.caption("✅ All changes saved.")
                 return
             if result.get("incomplete"):
-                status.info("New row: fill in **Item Code** and **Name** — it saves automatically.")
+                status.info("New row: fill in **Item Code** and **Name**, then save.")
             else:
                 # Edited back to the original value: nothing to save.
                 st.session_state["im_committed_sig"] = signature
@@ -2245,7 +2327,7 @@ def _edit_item_form(conn):
 def item_master_page(conn):
     t1, t2, t3 = st.columns([0.5, 0.25, 0.25], vertical_alignment="center")
     with t1:
-        _section_title("Item master", "Edit in the table (saves automatically) or use the buttons.")
+        _section_title("Item master", "Edit in the table and press Save changes, or use the buttons.")
     if t2.button("➕  Add new item", key="im_add_btn", type="primary", width="stretch") or st.session_state.pop("im_add_open", False):
         show_add_item_dialog()
     if t3.button("✏️  Edit an item", key="im_edit_btn", type="secondary", width="stretch"):
@@ -2714,158 +2796,238 @@ def render_stock_request_form(conn, part, key_prefix):
     return False
 
 
-# ── New PR ─────────────────────────────────────────────────────────────────
-def _pr_new_view(conn):
+# ── New PR: search-and-add cart ────────────────────────────────────────────
+PR_DUE_CHOICES = {"Today": 0, "3 days": 3, "1 week": 7, "2 weeks": 14, "1 month": 30, "Pick date": None}
+
+
+@st.cache_data(ttl=300, show_spinner=False, max_entries=20)
+def _cached_purchase_history(_conn, version, codes):
+    return item_purchase_history(_conn, list(codes))
+
+
+def _cart_sync_widget(pid):
+    st.session_state[f"pr_q_{pid}"] = _pr_draft()[pid]
+
+
+def _cart_add(pid, qty):
+    draft = _pr_draft()
+    draft[pid] = int(draft.get(pid, 0)) + max(1, int(qty))
+    _cart_sync_widget(pid)
+
+
+def _cart_step(pid, delta):
+    draft = _pr_draft()
+    if pid in draft:
+        draft[pid] = max(1, int(draft[pid]) + delta)
+        _cart_sync_widget(pid)
+
+
+def _cart_set(pid):
+    draft = _pr_draft()
+    if pid in draft:
+        draft[pid] = max(1, int(st.session_state.get(f"pr_q_{pid}") or 1))
+
+
+def _cart_remove(pid):
+    _pr_draft().pop(pid, None)
+    st.session_state.pop(f"pr_q_{pid}", None)
+    ids = st.session_state.get("pr_req_ids") or {}
+    for rid in [k for k, v in ids.items() if v == pid]:
+        ids.pop(rid, None)
+
+
+def _cart_clear():
+    for pid in list(_pr_draft()):
+        st.session_state.pop(f"pr_q_{pid}", None)
+    st.session_state["pr_draft"] = {}
+    st.session_state["pr_req_ids"] = {}
+
+
+def _cart_add_many(parts, skip_on_order=True, oo=None):
+    added = skipped = 0
+    for p in parts:
+        if skip_on_order and oo and p["part_id"] in oo:
+            skipped += 1
+            continue
+        if p["part_id"] not in _pr_draft():
+            _cart_add(p["part_id"], _suggest_qty(p))
+            added += 1
+    return added, skipped
+
+
+def _stock_badge(p):
+    qty = int(p.get("quantity") or 0)
+    unit = p.get("unit") or "Nos"
+    if qty <= 0:
+        return f"<span class='cb cb-out'>Out of stock</span>"
+    if qty <= int(p.get("min_level") or 0):
+        return f"<span class='cb cb-low'>{qty} {esc(unit)} · low</span>"
+    return f"<span class='cb cb-ok'>{qty} {esc(unit)}</span>"
+
+
+@st.fragment
+def pr_builder_fragment():
+    # Runs as a fragment: adding items and pressing + / − only redraws the builder.
+    with db_session() as conn:
+        _pr_builder(conn)
+
+
+def _pr_builder(conn):
     parts = all_parts(conn)
     by_code = {p["part_id"]: p for p in parts}
     oo = on_order(conn)
     draft = _pr_draft()
+    req_ids = st.session_state.setdefault("pr_req_ids", {})
     requests = _cached_requests(conn, data_version())
+
+    # drop items that no longer exist
+    for pid in [p for p in draft if p not in by_code]:
+        _cart_remove(pid)
 
     notice = st.session_state.pop("pr_new_notice", None)
     if notice:
-        st.info(notice)
+        st.toast(notice, icon="🧾")
 
-    a1, a2 = st.columns([0.5, 0.5])
-    low = low_stock_from_parts(parts)
-    if a1.button(f"⚡  Add all low-stock items ({len(low)})", key="pr_add_low", type="secondary", width="stretch"):
-        added, skipped = prefill_pr_with_low_stock(conn)
-        st.session_state["pr_new_notice"] = (
-            f"Added {added} low-stock item(s)."
-            + (f" Skipped {skipped} already on an open PR." if skipped else "")
-        )
-        st.rerun()
-    if a2.button("🗑  Clear list", key="pr_clear", type="secondary", width="stretch", disabled=not draft):
-        st.session_state["pr_draft"] = {}
-        st.session_state.pop("pr_req_pick", None)
-        st.rerun()
+    # ── 1. find & add ──
+    st.markdown("<div class='step-title'><span>1</span> Add items</div>", unsafe_allow_html=True)
+    low = [p for p in low_stock_from_parts(parts)]
+    out = [p for p in low if int(p.get("quantity") or 0) <= 0]
+    q1, q2, q3 = st.columns(3)
+    if q1.button(f"Low stock ({len(low)})", key="pr_add_low", icon=":material/bolt:", width="stretch",
+                 help="Adds every item at or below its minimum, except items already on an open PR"):
+        a, sk = _cart_add_many(low, oo=oo)
+        st.session_state["pr_new_notice"] = f"Added {a} item(s)" + (f", skipped {sk} already on order" if sk else "")
+        st.rerun(scope="fragment")
+    if q2.button(f"Out of stock ({len(out)})", key="pr_add_out", icon=":material/error:", width="stretch"):
+        a, sk = _cart_add_many(out, oo=oo)
+        st.session_state["pr_new_notice"] = f"Added {a} item(s)" + (f", skipped {sk} already on order" if sk else "")
+        st.rerun(scope="fragment")
+    if q3.button(f"Floor requests ({len(requests)})", key="pr_add_reqs", icon=":material/forum:", width="stretch",
+                 disabled=not requests):
+        for r in requests:
+            if r["part_id"] in by_code:
+                if r["part_id"] not in draft:
+                    _cart_add(r["part_id"], int(r["qty"]))
+                req_ids[r["id"]] = r["part_id"]
+        st.session_state["pr_new_notice"] = f"Added {len(requests)} floor request(s)"
+        st.rerun(scope="fragment")
 
-    pick = st.selectbox(
-        "Add an item",
-        [p["part_id"] for p in parts if p.get("active")],
-        index=None,
-        placeholder="🔍  Search an item to add…",
-        format_func=lambda c: f"{by_code[c]['name']}  ·  {c}  ·  stock {by_code[c]['quantity']}",
-        key=f"pr_add_pick_{st.session_state.get('pr_pick_nonce', 0)}",
+    term = st.text_input(
+        "Search item", key="pr_search", placeholder="🔍  Type any part of the name, code or size — e.g. m10 x16, r25 ballscrew",
+        label_visibility="collapsed",
     )
-    if pick:
-        draft.setdefault(pick, _suggest_qty(by_code[pick]))
-        st.session_state["pr_pick_nonce"] = st.session_state.get("pr_pick_nonce", 0) + 1
-        st.rerun()
-
-    chosen_requests = []
-    if requests:
+    if term.strip():
+        results = search_parts([p for p in parts if p.get("active")], term, limit=12)
+        if not results:
+            st.info("No item matches. Add it in Master first if it's a new item.")
         with st.container(border=True):
-            st.markdown(f"**📨 {len(requests)} request(s) from the floor** — tick to include in this PR")
-            for r in requests:
-                label = (f"{r['part_name']} × {r['qty']} — {r['requested_by']}, {fmt_ist(r['created_at'])}"
-                         + (f" · {r['reason']}" if r.get("reason") else ""))
-                if st.checkbox(label, key=f"pr_req_{r['id']}"):
-                    chosen_requests.append(r)
-                    if r["part_id"] not in draft:
-                        draft[r["part_id"]] = int(r["qty"])
+            for p in results:
+                pid = p["part_id"]
+                c1, c2 = st.columns([0.8, 0.2], vertical_alignment="center")
+                order_txt = f" · 🚚 {on_order_text(oo.get(pid))}" if pid in oo else ""
+                in_cart = f" · <b>in PR: {draft[pid]}</b>" if pid in draft else ""
+                c1.markdown(
+                    f"<div class='res-line'><b>{esc(p['name'])}</b> <span class='res-code'>{esc(pid)}</span>"
+                    f"<div class='res-meta'>{_stock_badge(p)} Min {int(p.get('min_level') or 0)}{esc(order_txt)}{in_cart}</div></div>",
+                    unsafe_allow_html=True,
+                )
+                c2.button("Add", key=f"pr_add_{pid}", icon=":material/add:", type="primary", width="stretch",
+                          on_click=_cart_add, args=(pid, _suggest_qty(p) if pid not in draft else 1))
 
-    if not draft:
-        st.info("Add items above. Low-stock items can be added in one click.")
-        return
-
-    # Rebuild the editor whenever the item list changes so row edits never land on the wrong item.
-    keys_sig = tuple(draft)
-    if st.session_state.get("pr_editor_keys") != keys_sig:
-        st.session_state["pr_editor_keys"] = keys_sig
-        st.session_state["pr_editor_nonce"] = st.session_state.get("pr_editor_nonce", 0) + 1
-    history = item_purchase_history(conn, list(draft))
-    rows = []
-    for code, qty in draft.items():
-        p = by_code.get(code)
-        if not p:
-            continue
-        h = history.get(code) or {}
-        last = ""
-        if h.get("vendor_name") or h.get("rate"):
-            last = " · ".join(x for x in [
-                f"₹{float(h['rate']):,.2f}" if h.get("rate") else "",
-                h.get("vendor_name") or "",
-                f"{h['lead_days']} days" if h.get("lead_days") is not None else "",
-            ] if x)
-        rows.append({
-            "part_id": code,
-            "name": p["name"],
-            "in_stock": int(p["quantity"] or 0),
-            "min": int(p["min_level"] or 0),
-            "qty": int(qty),
-            "unit": p["unit"],
-            "already_on_order": on_order_text(oo.get(code)),
-            "last_purchase": last,
-        })
-    df = pd.DataFrame(rows)
-    st.markdown("**Items on this PR**")
-    edited = st.data_editor(
-        df,
-        key=f"pr_lines_editor_{st.session_state.get('pr_editor_nonce', 0)}",
-        hide_index=True,
-        width="stretch",
-        num_rows="delete",
-        disabled=["part_id", "name", "in_stock", "min", "unit", "already_on_order", "last_purchase"],
-        column_config={
-            "part_id": st.column_config.TextColumn("Code"),
-            "name": st.column_config.TextColumn("Item", width="medium"),
-            "in_stock": st.column_config.NumberColumn("Stock", format="%d"),
-            "min": st.column_config.NumberColumn("Min", format="%d"),
-            "qty": st.column_config.NumberColumn("Order qty ✏️", min_value=1, step=1, format="%d", required=True),
-            "unit": st.column_config.TextColumn("Unit"),
-            "already_on_order": st.column_config.TextColumn("⚠ Already on order"),
-            "last_purchase": st.column_config.TextColumn("Last purchase"),
-        },
+    # ── 2. the PR lines ──
+    st.markdown(
+        f"<div class='step-title'><span>2</span> Check quantities "
+        f"<small>{len(draft)} item(s)</small></div>",
+        unsafe_allow_html=True,
     )
-    # keep the draft in step with edits / deleted rows
-    st.session_state["pr_draft"] = {
-        r["part_id"]: int(r["qty"] or 1) for r in edited.to_dict("records") if r.get("part_id")
-    }
-    dupes = [r for r in edited.to_dict("records") if r.get("already_on_order")]
-    if dupes:
-        st.warning(
-            f"⚠ {len(dupes)} item(s) are already on an open PR — check before ordering again: "
-            + "; ".join(f"{r['name']} ({r['already_on_order']})" for r in dupes[:4])
-        )
+    if not draft:
+        st.caption("No items yet — search above or use the quick buttons.")
+    else:
+        history = _cached_purchase_history(conn, data_version(), tuple(sorted(draft)))
+        dupes = 0
+        with st.container(border=True):
+            for pid in list(draft):
+                p = by_code[pid]
+                key = f"pr_q_{pid}"
+                if key not in st.session_state:
+                    st.session_state[key] = draft[pid]
+                meta = [f"Stock {int(p.get('quantity') or 0)}", f"Min {int(p.get('min_level') or 0)}"]
+                if pid in oo:
+                    dupes += 1
+                    meta.append(f"⚠ already {on_order_text(oo[pid])}")
+                h = history.get(pid) or {}
+                if h.get("rate") or h.get("vendor_name"):
+                    last = "Last: " + " ".join(x for x in [
+                        f"₹{float(h['rate']):,.2f}" if h.get("rate") else "", h.get("vendor_name") or ""] if x)
+                    meta.append(last)
+                c1, c2, c3, c4, c5 = st.columns([0.55, 0.09, 0.15, 0.09, 0.12], vertical_alignment="center")
+                c1.markdown(
+                    f"<div class='res-line'><b>{esc(p['name'])}</b> <span class='res-code'>{esc(pid)}</span>"
+                    f"<div class='res-meta'>{esc(' · '.join(meta))}</div></div>",
+                    unsafe_allow_html=True,
+                )
+                c2.button("−", key=f"pr_minus_{pid}", on_click=_cart_step, args=(pid, -1), width="stretch",
+                          disabled=draft[pid] <= 1, help="One less")
+                c3.number_input("Qty", min_value=1, step=1, key=key, on_change=_cart_set, args=(pid,),
+                                label_visibility="collapsed")
+                c4.button("＋", key=f"pr_plus_{pid}", on_click=_cart_step, args=(pid, 1), width="stretch",
+                          help="One more")
+                c5.button("", key=f"pr_del_{pid}", icon=":material/delete:", on_click=_cart_remove, args=(pid,),
+                          width="stretch", help="Remove from PR")
+        if dupes:
+            st.warning(f"⚠ {dupes} item(s) are already on an open PR — check before ordering again.")
+        st.button("Clear all items", key="pr_clear", icon=":material/remove_shopping_cart:", on_click=_cart_clear)
 
-    with st.form("pr_new_form", border=True):
-        c1, c2, c3 = st.columns([0.4, 0.3, 0.3])
-        requester = c1.text_input("Requested by *", placeholder="Full name — saved as proof")
-        required_by = c2.date_input(
-            "Required by *", value=_today_date() + dt.timedelta(days=7), min_value=_today_date(), format="DD/MM/YYYY"
-        )
-        priority = c3.selectbox("Priority", list(PR_PRIORITIES))
-        reason = st.text_input("Reason / job / machine", placeholder="e.g. Low stock, UTM-120 order for XYZ Ltd")
-        submit = st.form_submit_button(
-            f"🧾  Raise PR ({len(st.session_state['pr_draft'])} item(s))", type="primary", width="stretch"
-        )
-    if submit:
+    # ── 3. details & raise ──
+    st.markdown("<div class='step-title'><span>3</span> Details</div>", unsafe_allow_html=True)
+    d1, d2 = st.columns([0.5, 0.5])
+    requester = d1.text_input("Requested by *", key="pr_requester", value=st.session_state.get("pr_last_requester", ""),
+                              placeholder="Full name — saved as proof")
+    reason = d2.text_input("Reason / job / machine", key="pr_reason", placeholder="e.g. UTM-120 for XYZ Ltd")
+    d3, d4 = st.columns([0.6, 0.4])
+    with d3:
+        st.session_state.setdefault("pr_due_quick", "1 week")
+        due_choice = st.segmented_control("Required by *", list(PR_DUE_CHOICES), key="pr_due_quick") or "1 week"
+        if PR_DUE_CHOICES[due_choice] is None:
+            required_by = st.date_input("Date", value=_today_date() + dt.timedelta(days=7), min_value=_today_date(),
+                                        format="DD/MM/YYYY", key="pr_due_date", label_visibility="collapsed")
+        else:
+            required_by = _today_date() + dt.timedelta(days=PR_DUE_CHOICES[due_choice])
+            st.caption(f"Required by **{required_by:%a, %d %b %Y}**")
+    with d4:
+        st.session_state.setdefault("pr_priority", "Normal")
+        priority = st.segmented_control("Priority", list(PR_PRIORITIES), key="pr_priority") or "Normal"
+
+    total_qty = sum(draft.values())
+    if st.button(
+        f"Raise PR — {len(draft)} item(s), {total_qty} units" if draft else "Raise PR",
+        key="pr_raise", type="primary", icon=":material/send:", width="stretch", disabled=not draft,
+    ):
         try:
             pr_no = create_pr(
                 conn,
-                [{"part_id": k, "qty": v} for k, v in st.session_state["pr_draft"].items()],
-                requester,
-                required_by,
-                priority,
-                reason,
+                [{"part_id": k, "qty": v} for k, v in draft.items()],
+                requester, required_by, priority, reason,
                 raised_by=st.session_state.get("user", "manager"),
-                request_ids=[r["id"] for r in chosen_requests],
+                request_ids=list(req_ids),
             )
         except ValueError as exc:
             st.error(str(exc))
             return
         bump_data_version()
-        st.session_state["pr_draft"] = {}
-        st.session_state["pr_editor_nonce"] = st.session_state.get("pr_editor_nonce", 0) + 1
-        for r in chosen_requests:
-            st.session_state.pop(f"pr_req_{r['id']}", None)
+        st.session_state["pr_last_requester"] = requester.strip()
+        _cart_clear()
+        st.session_state.pop("pr_reason", None)
         st.session_state["pr_notice"] = f"✅ {pr_no} raised. Mark it Ordered once the order is placed."
         found = list_prs(conn, search=pr_no, limit=1)
         if found:
             st.session_state["pr_share_id"] = found[0]["id"]
         st.session_state["pr_view_next"] = "Open PRs"
-        st.rerun()
+        st.rerun(scope="app")
+
+
+def _pr_new_view(conn):
+    pr_builder_fragment()
 
 
 # ── PR detail dialog ───────────────────────────────────────────────────────
@@ -3177,8 +3339,8 @@ def _pr_pending_view(conn):
     elif show == "Ordered — awaiting delivery":
         rows = [r for r in rows if r["status"] in ("ordered", "partial")]
     if q:
-        rows = [r for r in rows if any(q in str(r.get(f) or "").lower()
-                                       for f in ("part_name", "part_id", "pr_no", "vendor_name", "requester", "po_ref"))]
+        rows = [r for r in rows if row_matches(
+            [r.get(f) for f in ("part_name", "part_id", "pr_no", "vendor_name", "requester", "po_ref")], q)]
     rows = sorted(rows, key=lambda r: -(r.get("days_late") if r.get("days_late") is not None else -9999))
     if not rows:
         st.info("Nothing matches.")
@@ -3234,10 +3396,10 @@ def _pr_requests_view(conn):
     st.dataframe(df, hide_index=True, width="stretch")
     c1, c2 = st.columns(2)
     if c1.button("➕  Put all requests into a new PR", key="pr_req_all", type="primary", width="stretch"):
-        draft = _pr_draft()
+        ids = st.session_state.setdefault("pr_req_ids", {})
         for r in reqs:
-            draft[r["part_id"]] = draft.get(r["part_id"], 0) + int(r["qty"])
-            st.session_state[f"pr_req_{r['id']}"] = True
+            _cart_add(r["part_id"], int(r["qty"]))
+            ids[r["id"]] = r["part_id"]
         st.session_state["pr_view_next"] = "New PR"
         st.rerun()
     with c2.popover("Dismiss a request", width="stretch"):
