@@ -21,7 +21,7 @@ from psycopg2.extensions import TRANSACTION_STATUS_IDLE
 
 # Bump this whenever init_db() creates or changes tables. The app re-runs
 # schema setup when it changes, even if the server process was not restarted.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 ITEMS_SNAPSHOT_CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "items_master_live.csv")
 APP_TIMEZONE = "Asia/Kolkata"
@@ -962,7 +962,8 @@ def wipe_all_data(conn):
     c = conn.cursor()
     # TRUNCATE bypasses the "PR history is permanent" row trigger on purpose:
     # this is the explicit, code-protected full wipe.
-    c.execute("TRUNCATE stock_requests, pr_events, pr_lines, purchase_requisitions, vendors RESTART IDENTITY")
+    c.execute("TRUNCATE stock_requests, pr_events, pr_lines, purchase_requisitions, vendors, item_merges, "
+              "duplicate_dismissed RESTART IDENTITY")
     c.execute("DELETE FROM transactions")
     c.execute("DELETE FROM parts")
     conn.commit()
@@ -1675,6 +1676,27 @@ CREATE TABLE IF NOT EXISTS stock_requests (
     handle_note TEXT DEFAULT '',
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
+CREATE TABLE IF NOT EXISTS item_merges (
+    id SERIAL PRIMARY KEY,
+    kept_part_id TEXT NOT NULL,
+    kept_name TEXT DEFAULT '',
+    removed_part_id TEXT NOT NULL,
+    removed_name TEXT DEFAULT '',
+    kept_qty_before INTEGER DEFAULT 0,
+    removed_qty_before INTEGER DEFAULT 0,
+    final_qty INTEGER DEFAULT 0,
+    moved_history_rows INTEGER DEFAULT 0,
+    merged_by TEXT NOT NULL,
+    note TEXT DEFAULT '',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS duplicate_dismissed (
+    part_a TEXT NOT NULL,
+    part_b TEXT NOT NULL,
+    dismissed_by TEXT DEFAULT '',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (part_a, part_b)
+);
 CREATE INDEX IF NOT EXISTS idx_pr_lines_pr ON pr_lines(pr_id);
 CREATE INDEX IF NOT EXISTS idx_pr_lines_part ON pr_lines(part_id);
 CREATE INDEX IF NOT EXISTS idx_pr_events_pr ON pr_events(pr_id);
@@ -2238,4 +2260,127 @@ def list_pending_pr_lines(conn):
         ORDER BY COALESCE(pr.expected_date, pr.required_by) NULLS LAST, pr.pr_no, l.id
         """
     )
+    return c.fetchall()
+
+
+
+# ── Duplicate items: merge & dismiss ───────────────────────────────────────
+@transactional
+def merge_parts(conn, keep_part_id, remove_part_ids, final_qty, actor, note=""):
+    """Merge duplicate items into one.
+
+    All history, PR lines and requests of the removed items move to the kept
+    item, the kept item's stock is set to ``final_qty`` (recorded in History
+    as a 'duplicate merge' correction), and the removed items are switched off
+    (never deleted) with a note saying where they went.
+    """
+    actor = _clean_name(actor, "Your name")
+    remove_part_ids = [p for p in dict.fromkeys(remove_part_ids or []) if p and p != keep_part_id]
+    if not remove_part_ids:
+        raise ValueError("Pick at least one duplicate to merge.")
+    final_qty = int(final_qty)
+    if final_qty < 0:
+        raise ValueError("Stock after merge cannot be negative.")
+    c = conn.cursor()
+    try:
+        c.execute(
+            "SELECT * FROM parts WHERE part_id = ANY(%s) ORDER BY id FOR UPDATE",
+            ([keep_part_id] + remove_part_ids,),
+        )
+        rows = {r["part_id"]: r for r in c.fetchall()}
+        keep = rows.get(keep_part_id)
+        if keep is None:
+            raise ValueError("The item to keep no longer exists.")
+        missing = [p for p in remove_part_ids if p not in rows]
+        if missing:
+            raise ValueError(f"Item not found: {', '.join(missing)}")
+
+        keep_before = int(keep["quantity"] or 0)
+        stamp = "NOW() AT TIME ZONE 'Asia/Kolkata'"
+        merged_names = []
+        for pid in remove_part_ids:
+            r = rows[pid]
+            qty = int(r["quantity"] or 0)
+            c.execute("UPDATE transactions SET part_id = %s WHERE part_id = %s", (keep_part_id, pid))
+            moved = c.rowcount
+            c.execute("UPDATE pr_lines SET part_id = %s WHERE part_id = %s", (keep_part_id, pid))
+            c.execute("UPDATE stock_requests SET part_id = %s WHERE part_id = %s", (keep_part_id, pid))
+            c.execute(
+                f"""
+                UPDATE parts SET active = 0, quantity = 0, updated_at = NOW(),
+                       description = '[MERGED into ' || %s || ' on ' || to_char({stamp}, 'DD-Mon-YYYY') ||
+                                     ' by ' || %s || '] ' || COALESCE(description, '')
+                WHERE part_id = %s
+                """,
+                (keep_part_id, actor, pid),
+            )
+            if qty:
+                c.execute(
+                    """
+                    INSERT INTO transactions (tx_type, part_id, part_name, qty, unit, performed_by, performed_role,
+                                              machine_sn, purpose, note, prev_stock, balance_stock)
+                    VALUES ('adjust', %s, %s, %s, %s, %s, 'manager', '', 'duplicate merge', %s, %s, 0)
+                    """,
+                    (pid, r["name"], -qty, r["unit"], actor, f"Merged into {keep_part_id} ({keep['name']})", qty),
+                )
+            c.execute(
+                """
+                INSERT INTO item_merges (kept_part_id, kept_name, removed_part_id, removed_name, kept_qty_before,
+                                         removed_qty_before, final_qty, moved_history_rows, merged_by, note)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (keep_part_id, keep["name"], pid, r["name"], keep_before, qty, final_qty, moved, actor,
+                 str(note or "").strip()),
+            )
+            merged_names.append(f"{pid} ({r['name']}, stock {qty})")
+
+        # fill gaps on the kept item from the duplicates
+        location = keep["location"] or next((rows[p]["location"] for p in remove_part_ids if rows[p]["location"]), "")
+        min_level = max([int(keep["min_level"] or 0)] + [int(rows[p]["min_level"] or 0) for p in remove_part_ids])
+        reorder = max([int(keep["reorder_qty"] or 0)] + [int(rows[p]["reorder_qty"] or 0) for p in remove_part_ids])
+        c.execute(
+            """
+            UPDATE parts SET quantity = %s, location = %s, min_level = %s, reorder_qty = %s, active = 1,
+                   updated_at = NOW()
+            WHERE part_id = %s
+            """,
+            (final_qty, location, min_level, reorder, keep_part_id),
+        )
+        c.execute(
+            """
+            INSERT INTO transactions (tx_type, part_id, part_name, qty, unit, performed_by, performed_role,
+                                      machine_sn, purpose, note, prev_stock, balance_stock)
+            VALUES ('adjust', %s, %s, %s, %s, %s, 'manager', '', 'duplicate merge', %s, %s, %s)
+            """,
+            (keep_part_id, keep["name"], final_qty - keep_before, keep["unit"], actor,
+             "Merged duplicates: " + "; ".join(merged_names) + (f". {note.strip()}" if str(note or "").strip() else ""),
+             keep_before, final_qty),
+        )
+        conn.commit()
+        return {"kept": keep_part_id, "removed": remove_part_ids, "final_qty": final_qty}
+    except Exception:
+        conn.rollback()
+        raise
+
+
+@transactional
+def dismiss_duplicate(conn, part_a, part_b, actor=""):
+    a, b = sorted([str(part_a), str(part_b)])
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO duplicate_dismissed (part_a, part_b, dismissed_by) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+        (a, b, str(actor or "")),
+    )
+    conn.commit()
+
+
+def list_dismissed_duplicates(conn):
+    c = conn.cursor()
+    c.execute("SELECT part_a, part_b FROM duplicate_dismissed")
+    return {(r["part_a"], r["part_b"]) for r in c.fetchall()}
+
+
+def list_item_merges(conn, limit=200):
+    c = conn.cursor()
+    c.execute("SELECT * FROM item_merges ORDER BY created_at DESC LIMIT %s", (limit,))
     return c.fetchall()

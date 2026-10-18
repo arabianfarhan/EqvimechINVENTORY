@@ -14,6 +14,7 @@ import streamlit as st
 from st_keyup import st_keyup
 
 from search import row_matches, search_parts
+from duplicates import find_duplicate_groups, is_possible_duplicate
 from db import (
     APP_TIMEZONE,
     SCHEMA_VERSION,
@@ -42,6 +43,10 @@ from db import (
     ITEMS_SNAPSHOT_CSV_PATH,
     normalize_category,
     wipe_all_data,
+    dismiss_duplicate,
+    list_dismissed_duplicates,
+    list_item_merges,
+    merge_parts,
     PR_OPEN_STATUSES,
     PR_PRIORITIES,
     PR_STATUS_LABELS,
@@ -2236,6 +2241,17 @@ def _add_item_form(conn):
         if existing:
             st.error(f"Item code '{code}' already exists ({existing['name']}). Use a different code.")
             return
+        similar = [p for p in all_parts(conn)
+                   if p.get("active") and is_possible_duplicate({"part_id": code, "name": name}, p)]
+        if similar and st.session_state.get("im_add_confirm") != (code, name):
+            st.session_state["im_add_confirm"] = (code, name)
+            st.warning(
+                "⚠ This looks like an item you already have:\n\n"
+                + "\n".join(f"- **{p['name']}** ({p['part_id']}) — stock {int(p.get('quantity') or 0)}" for p in similar[:5])
+                + "\n\nIf it really is a different item, press **Add item** again."
+            )
+            return
+        st.session_state.pop("im_add_confirm", None)
         try:
             save_master_table(
                 conn,
@@ -2324,6 +2340,102 @@ def _edit_item_form(conn):
         st.rerun()
 
 
+@st.cache_data(ttl=300, show_spinner=False, max_entries=4)
+def _cached_dismissed(_conn, version):
+    return list_dismissed_duplicates(_conn)
+
+
+def _duplicate_groups(conn):
+    return find_duplicate_groups(all_parts(conn), _cached_dismissed(conn, data_version()))
+
+
+def duplicates_section(conn, groups):
+    label = f"🧹  Duplicate items ({len(groups)} found)" if groups else "🧹  Duplicate items"
+    with st.expander(label, expanded=bool(st.session_state.get("dup_open"))):
+        notice = st.session_state.pop("dup_notice", None)
+        if notice:
+            st.success(notice)
+        if not groups:
+            st.success("No likely duplicates found.")
+        else:
+            st.caption(
+                "These items look like the same part entered twice (same size, very similar name). "
+                "Pick the one to **keep**, count the real stock, and merge. All history, PRs and requests move "
+                "to the kept item; the duplicate is switched off (not deleted) and the merge is logged."
+            )
+            by_name = st.text_input("Your name *", key="dup_actor", placeholder="Saved with each merge as proof")
+            for gi, g in enumerate(groups[:25]):
+                items = g["items"]
+                codes = [p["part_id"] for p in items]
+                gkey = abs(hash(tuple(sorted(codes)))) % 10**8
+                with st.container(border=True):
+                    st.markdown(
+                        f"**{'🔴 Very likely' if g['confidence'] == 'High' else '🟠 Possible'} duplicate** "
+                        f"<span class='res-code'>{esc(g['why'])}</span>",
+                        unsafe_allow_html=True,
+                    )
+                    st.dataframe(
+                        pd.DataFrame([{
+                            "Item code": p["part_id"], "Name": p["name"], "Stock": int(p.get("quantity") or 0),
+                            "Unit": p.get("unit"), "Location": p.get("location") or "",
+                            "Category": normalize_category(p.get("category")),
+                            "Description": p.get("description") or "",
+                        } for p in items]),
+                        hide_index=True, width="stretch",
+                    )
+                    c1, c2 = st.columns([0.6, 0.4])
+                    keep = c1.radio(
+                        "Keep this item", codes, key=f"dup_keep_{gkey}",
+                        format_func=lambda c, items=items: next(f"{p['name']}  ·  {c}" for p in items if p["part_id"] == c),
+                    )
+                    qtys = [int(p.get("quantity") or 0) for p in items]
+                    same = len(set(qtys)) == 1
+                    final_qty = c2.number_input(
+                        "Real stock after merge *", min_value=0, step=1,
+                        value=qtys[codes.index(keep)], key=f"dup_qty_{gkey}_{keep}",
+                        help="Count the shelf. If both entries are the same physical stock, enter it once — "
+                             "don't add them together.",
+                    )
+                    c2.caption(
+                        "Same count on both — probably the same stock entered twice."
+                        if same else f"Counts differ: {' / '.join(str(q) for q in qtys)}. Check the shelf."
+                    )
+                    b1, b2 = st.columns(2)
+                    if b1.button("Merge into kept item", key=f"dup_merge_{gkey}", type="primary",
+                                 icon=":material/merge:", width="stretch"):
+                        try:
+                            merge_parts(conn, keep, [c for c in codes if c != keep], int(final_qty), by_name,
+                                        f"Duplicate cleanup ({g['why']})")
+                        except ValueError as exc:
+                            st.error(str(exc))
+                        else:
+                            bump_data_version()
+                            st.session_state["dup_open"] = True
+                            st.session_state["dup_notice"] = (
+                                f"✅ Merged into {keep}. Stock is now {int(final_qty)}; history moved over.")
+                            st.rerun()
+                    if b2.button("Not duplicates", key=f"dup_dismiss_{gkey}", icon=":material/close:", width="stretch"):
+                        for i in range(len(codes)):
+                            for j in range(i + 1, len(codes)):
+                                dismiss_duplicate(conn, codes[i], codes[j], by_name or st.session_state.get("user", ""))
+                        bump_data_version()
+                        st.session_state["dup_open"] = True
+                        st.session_state["dup_notice"] = "Marked as different items — they won't be suggested again."
+                        st.rerun()
+            if len(groups) > 25:
+                st.caption(f"Showing 25 of {len(groups)}. Merge these and the rest will appear.")
+
+        merges = list_item_merges(conn, limit=50)
+        if merges:
+            st.markdown("**Merge log**")
+            st.dataframe(pd.DataFrame([{
+                "When (IST)": fmt_ist(r["created_at"]), "Kept": f"{r['kept_name']} ({r['kept_part_id']})",
+                "Merged away": f"{r['removed_name']} ({r['removed_part_id']})",
+                "Stock before": f"{r['kept_qty_before']} + {r['removed_qty_before']}",
+                "Stock after": r["final_qty"], "By": r["merged_by"], "Note": r["note"],
+            } for r in merges]), hide_index=True, width="stretch")
+
+
 def item_master_page(conn):
     t1, t2, t3 = st.columns([0.5, 0.25, 0.25], vertical_alignment="center")
     with t1:
@@ -2332,7 +2444,15 @@ def item_master_page(conn):
         show_add_item_dialog()
     if t3.button("✏️  Edit an item", key="im_edit_btn", type="secondary", width="stretch"):
         show_edit_item_dialog()
+    dupe_groups = _duplicate_groups(conn)
+    if dupe_groups:
+        st.markdown(
+            f"<div class='unsaved'>🧹 <b>{len(dupe_groups)}</b> possible duplicate item group(s) found — "
+            "review them in <b>Duplicate items</b> below the table.</div>",
+            unsafe_allow_html=True,
+        )
     master_table_fragment()
+    duplicates_section(conn, dupe_groups)
 
     with st.expander("⬇ ⬆  Export / import CSV"):
         import_result = st.session_state.pop("im_import_result", None)

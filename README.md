@@ -37,6 +37,14 @@ Small spelling slips (`timing` vs `TIMMING`) are tolerated too.
 Edit as many cells as you like, then press **Save changes** once (fast, nothing gets lost).
 Turn on "Save each edit immediately" if you prefer the old behaviour.
 
+## Duplicate items (Master → Duplicate items)
+
+The app spots items that are probably the same part entered twice (same size and near-identical
+name, e.g. "10x16 ALLEN Bolt HT" and "M10x16 Allen Bolt"). For each group: pick the item to keep, enter
+the real counted stock, and press **Merge**. History, PRs and requests move to the kept item; the
+duplicate is switched off (not deleted); every merge is logged with name and time. "Not duplicates"
+hides a wrong suggestion for good. Adding a new item that looks like an existing one shows a warning.
+
 ## Purchase requisitions (Manager → Purchase tab)
 
 - **New PR**: search and tap **Add**, or add all low-stock / out-of-stock items / floor requests in one
