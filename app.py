@@ -38,6 +38,25 @@ from db import (
     ITEMS_SNAPSHOT_CSV_PATH,
     normalize_category,
     wipe_all_data,
+    PR_OPEN_STATUSES,
+    PR_PRIORITIES,
+    PR_STATUS_LABELS,
+    add_pr_note,
+    close_pr,
+    create_pr,
+    create_stock_request,
+    dismiss_stock_request,
+    get_pr_detail,
+    item_purchase_history,
+    list_prs,
+    list_stock_requests,
+    list_vendors,
+    mark_pr_ordered,
+    on_order_map,
+    receive_pr,
+    save_vendor,
+    update_pr_expected_date,
+    vendor_report,
 )
 
 st.set_page_config(
@@ -885,6 +904,23 @@ def inject_theme():
             .brand-title { font-size: 1.35rem !important; }
         }
         
+        .pr-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.5rem; margin: 0.4rem 0 0.8rem 0; }
+        .pr-stats > div { background: rgba(255,255,255,0.6); border: 1px solid rgba(148,163,184,0.3);
+                          border-radius: 14px; padding: 0.55rem 0.8rem; display: flex; align-items: baseline; gap: 0.5rem; }
+        .pr-stats b { font-size: 1.4rem; color: #0f172a; }
+        .pr-stats span { font-size: 0.78rem; color: #475569; font-weight: 600; }
+        .pr-stats .pr-bad { border-color: #fca5a5; background: rgba(254,226,226,0.8); }
+        .pr-stats .pr-bad b { color: #b91c1c; }
+        .pr-stats .pr-warn { border-color: #fcd34d; background: rgba(254,243,199,0.8); }
+        @media (max-width: 640px) { .pr-stats { grid-template-columns: repeat(2, 1fr); } }
+        /* ── PR timeline ── */
+        .pr-event { border-left: 3px solid #0f766e; padding: 0.35rem 0.7rem; margin: 0.3rem 0;
+                    background: rgba(255,255,255,0.55); border-radius: 0 10px 10px 0; }
+        .pr-ev-when { font-weight: 700; color: #0f172a; margin-right: 0.6rem; font-size: 0.85rem; }
+        .pr-ev-what { font-weight: 700; color: #0f766e; margin-right: 0.6rem; font-size: 0.85rem; }
+        .pr-ev-who { color: #475569; font-size: 0.85rem; }
+        .pr-ev-detail { color: #334155; font-size: 0.85rem; margin-top: 0.15rem; }
+        div[class*="st-key-pr_open_"] button p { white-space: pre-line !important; text-align: left !important; }
         /* ── Page titles & result cards ── */
         .page-title { font-size: 1.15rem; font-weight: 800; color: #0f172a; margin: 0.2rem 0 0.1rem 0; }
         .page-sub { font-size: 0.85rem; color: #64748b; margin-bottom: 0.7rem; }
@@ -1159,9 +1195,11 @@ def _show_arrow_animation_once(key_prefix="pick"):
 PICKER_LIMIT = 60
 
 
-def picker_label(part):
-    """Button text: name · description, with live stock at the end."""
+def picker_label(part, oo=None):
+    """Button text: name · description, with live stock (and anything on order) at the end."""
     base = part_list_label(part)
+    order_info = (oo or {}).get(part.get("part_id"))
+    order_txt = f"  ·  🚚 {order_info['qty']} on order" if order_info else ""
     qty = int(part.get("quantity") or 0)
     unit = part.get("unit") or "Nos"
     if not part.get("active"):
@@ -1176,11 +1214,11 @@ def picker_label(part):
     else:
         badge = f"{qty} {unit}"
         marker = "🟢"
-    return f"{marker}  {base}  —  {badge}"
+    return f"{marker}  {base}  —  {badge}{order_txt}"
 
 
 @st.fragment
-def render_part_picker(parts, parts_all, search_key, dialog_key, button_prefix, placeholder, category_key=None):
+def render_part_picker(parts, parts_all, search_key, dialog_key, button_prefix, placeholder, category_key=None, oo=None):
     # Runs as a fragment: typing in the search box only re-draws this list,
     # not the whole page.
     search_term = live_search_input("Search item", placeholder, search_key) or ""
@@ -1222,7 +1260,7 @@ def render_part_picker(parts, parts_all, search_key, dialog_key, button_prefix, 
             for p in shown:
                 pid = p.get("part_id", "")
                 if st.button(
-                    picker_label(p),
+                    picker_label(p, oo),
                     key=f"{button_prefix}_{pid}",
                     width="stretch",
                     type="secondary",
@@ -1256,6 +1294,23 @@ def _show_item_details_dialog_body(conn):
         unsafe_allow_html=True,
     )
 
+    info = on_order(conn).get(part["part_id"])
+    if info:
+        st.info(f"🚚 {on_order_text(info)}")
+    if st.session_state.get("role") == "manager":
+        h = item_purchase_history(conn, [part["part_id"]]).get(part["part_id"])
+        if h:
+            bits = [f"Last ordered {fmt_ist(h['ordered_at'])} on {h['pr_no']}"]
+            if h.get("vendor_name"):
+                bits.append(f"from {h['vendor_name']}")
+            if h.get("rate"):
+                bits.append(f"at ₹{float(h['rate']):,.2f}")
+            if h.get("lead_days") is not None:
+                bits.append(f"arrived in {h['lead_days']} day(s)")
+            st.caption(" ".join(bits))
+    elif int(part["quantity"] or 0) <= int(part["min_level"] or 0):
+        render_stock_request_form(conn, part, "items")
+
     if st.button("Close", key="close_items_dialog", type="secondary"):
         st.session_state.pop("items_dialog_part_id", None)
         safe_rerun()
@@ -1287,6 +1342,11 @@ def _show_pick_dialog_body(conn):
 
     if part["quantity"] <= 0:
         st.error("This item is out of stock and cannot be issued.")
+        info = on_order(conn).get(part["part_id"])
+        if info:
+            st.info(f"🚚 {on_order_text(info)}")
+        if st.session_state.get("role") != "manager":
+            render_stock_request_form(conn, part, "pick")
         if st.button("Close", key="close_pick_dialog_oos", type="secondary"):
             st.session_state.pop("pick_dialog_part_id", None)
             safe_rerun()
@@ -1741,6 +1801,7 @@ def items_page(conn):
         "items_browser",
         "Search item name, code, description or location…",
         category_key="items_category",
+        oo=on_order(conn),
     )
     if st.session_state.get("items_dialog_part_id"):
         show_item_details_dialog()
@@ -1780,6 +1841,7 @@ def pick_material_page(conn):
         "pick_dialog_part_id",
         "pick_browser",
         "Search item to issue — name, code, description…",
+        oo=on_order(conn),
     )
     if st.session_state.get("pick_dialog_part_id"):
         show_pick_dialog()
@@ -1813,6 +1875,7 @@ def deposit_stock_page(conn):
         "deposit_dialog_part_id",
         "deposit_browser",
         "Search item to inward — name, code, description…",
+        oo=on_order(conn),
     )
     if st.session_state.get("deposit_dialog_part_id"):
         show_deposit_dialog()
@@ -2389,7 +2452,17 @@ def alerts_page(conn):
         return
 
     out = [p for p in alerts if int(p.get("quantity") or 0) <= 0]
-    st.warning(f"⚠️  {len(alerts)} item(s) at or below minimum stock — {len(out)} completely out of stock.")
+    oo = on_order(conn)
+    not_ordered = [p for p in alerts if p["part_id"] not in oo]
+    st.warning(
+        f"⚠️  {len(alerts)} item(s) at or below minimum stock — {len(out)} completely out of stock · "
+        f"{len(not_ordered)} not on any PR yet."
+    )
+    if st.session_state.get("role") == "manager" and not_ordered:
+        if st.button(f"🧾  Raise PR for the {len(not_ordered)} item(s) not yet ordered", key="alerts_raise_pr", type="primary"):
+            prefill_pr_with_low_stock(conn)
+            st.session_state["pr_view_next"] = "New PR"
+            go_to_section(PR_NAV)
     df = pd.DataFrame(
         [
             {
@@ -2401,6 +2474,7 @@ def alerts_page(conn):
                 "Unit": p.get("unit"),
                 "Category": normalize_category(p.get("category")),
                 "Location": p.get("location") or "",
+                "On order": on_order_text(oo.get(p["part_id"])),
             }
             for p in alerts
         ]
@@ -2415,7 +2489,753 @@ def alerts_page(conn):
     )
 
 
+# ── Purchase requisitions (PR) ──────────────────────────────────────────────
+PR_NAV = "🧾 Purchase"
+PR_VIEWS = ["Open PRs", "New PR", "Requests", "Register", "Vendors"]
+PRIORITY_MARK = {"Normal": "", "Urgent": "🟠 Urgent", "Breakdown": "🔴 Breakdown"}
+
+
+@st.cache_data(ttl=300, show_spinner=False, max_entries=4)
+def _cached_on_order(_conn, version):
+    return on_order_map(_conn)
+
+
+def on_order(conn):
+    return _cached_on_order(conn, data_version())
+
+
+@st.cache_data(ttl=300, show_spinner=False, max_entries=40)
+def _cached_prs(_conn, version, statuses, search, today):
+    return [dict(r) for r in list_prs(_conn, statuses=list(statuses) if statuses else None, search=search)]
+
+
+@st.cache_data(ttl=300, show_spinner=False, max_entries=4)
+def _cached_requests(_conn, version):
+    return [dict(r) for r in list_stock_requests(_conn, "open")]
+
+
+@st.cache_data(ttl=300, show_spinner=False, max_entries=4)
+def _cached_vendor_report(_conn, version, today):
+    return [dict(r) for r in vendor_report(_conn)]
+
+
+@st.cache_data(ttl=300, show_spinner=False, max_entries=4)
+def _cached_vendors(_conn, version):
+    return [dict(r) for r in list_vendors(_conn)]
+
+
+def _today_date():
+    return dt.datetime.now(tz=ZoneInfo(APP_TIMEZONE)).date()
+
+
+def pr_due(pr):
+    """The date that matters now: expected delivery once ordered, otherwise required-by."""
+    return pr.get("expected_date") or pr.get("required_by")
+
+
+def pr_overdue_days(pr, today=None):
+    if pr.get("status") not in PR_OPEN_STATUSES:
+        return 0
+    due = pr_due(pr)
+    if not due:
+        return 0
+    return max(0, ((today or _today_date()) - due).days)
+
+
+def fmt_date(value):
+    if not value:
+        return ""
+    try:
+        return value.strftime("%d-%b-%Y")
+    except Exception:
+        return str(value)
+
+
+def on_order_text(info):
+    if not info:
+        return ""
+    first_no, first_due = info["prs"][0]
+    due = f", due {first_due:%d-%b}" if first_due else ""
+    more = f" +{len(info['prs']) - 1} more" if len(info["prs"]) > 1 else ""
+    return f"{info['qty']} on order ({first_no}{due}{more})"
+
+
+def go_to_section(section):
+    """Switch the main navigation on the next run (widgets can't be changed after they render)."""
+    st.session_state["_nav_to"] = section
+    st.rerun()
+
+
+def _suggest_qty(part):
+    reorder = int(part.get("reorder_qty") or 0)
+    gap = int(part.get("min_level") or 0) - int(part.get("quantity") or 0)
+    return max(reorder, gap, 1)
+
+
+def _pr_draft():
+    return st.session_state.setdefault("pr_draft", {})
+
+
+def prefill_pr_with_low_stock(conn):
+    draft = _pr_draft()
+    oo = on_order(conn)
+    added = skipped = 0
+    for p in low_stock_from_parts(all_parts(conn)):
+        if p["part_id"] in oo:
+            skipped += 1
+            continue
+        if p["part_id"] not in draft:
+            draft[p["part_id"]] = _suggest_qty(p)
+            added += 1
+    return added, skipped
+
+
+# ── Operator request form (User mode) ──────────────────────────────────────
+def render_stock_request_form(conn, part, key_prefix):
+    st.markdown("**Ask the store manager to order this item**")
+    with st.form(f"{key_prefix}_req_{part['part_id']}", border=True):
+        c1, c2 = st.columns([0.6, 0.4])
+        name = c1.text_input("Your name *", placeholder="e.g. Ravi")
+        qty = c2.number_input("Qty needed", min_value=1, step=1, value=max(1, int(part.get("reorder_qty") or 1)))
+        reason = st.text_input("For which job / machine?", placeholder="e.g. UTM-120 assembly")
+        sent = st.form_submit_button("📨  Send request", type="primary", width="stretch")
+    if sent:
+        try:
+            create_stock_request(conn, part["part_id"], int(qty), name, reason)
+        except ValueError as exc:
+            st.error(str(exc))
+            return False
+        bump_data_version()
+        st.success("Request sent to the manager. It is recorded with your name and today's date.")
+        return True
+    return False
+
+
+# ── New PR ─────────────────────────────────────────────────────────────────
+def _pr_new_view(conn):
+    parts = all_parts(conn)
+    by_code = {p["part_id"]: p for p in parts}
+    oo = on_order(conn)
+    draft = _pr_draft()
+    requests = _cached_requests(conn, data_version())
+
+    notice = st.session_state.pop("pr_new_notice", None)
+    if notice:
+        st.info(notice)
+
+    a1, a2 = st.columns([0.5, 0.5])
+    low = low_stock_from_parts(parts)
+    if a1.button(f"⚡  Add all low-stock items ({len(low)})", key="pr_add_low", type="secondary", width="stretch"):
+        added, skipped = prefill_pr_with_low_stock(conn)
+        st.session_state["pr_new_notice"] = (
+            f"Added {added} low-stock item(s)."
+            + (f" Skipped {skipped} already on an open PR." if skipped else "")
+        )
+        st.rerun()
+    if a2.button("🗑  Clear list", key="pr_clear", type="secondary", width="stretch", disabled=not draft):
+        st.session_state["pr_draft"] = {}
+        st.session_state.pop("pr_req_pick", None)
+        st.rerun()
+
+    pick = st.selectbox(
+        "Add an item",
+        [p["part_id"] for p in parts if p.get("active")],
+        index=None,
+        placeholder="🔍  Search an item to add…",
+        format_func=lambda c: f"{by_code[c]['name']}  ·  {c}  ·  stock {by_code[c]['quantity']}",
+        key=f"pr_add_pick_{st.session_state.get('pr_pick_nonce', 0)}",
+    )
+    if pick:
+        draft.setdefault(pick, _suggest_qty(by_code[pick]))
+        st.session_state["pr_pick_nonce"] = st.session_state.get("pr_pick_nonce", 0) + 1
+        st.rerun()
+
+    chosen_requests = []
+    if requests:
+        with st.container(border=True):
+            st.markdown(f"**📨 {len(requests)} request(s) from the floor** — tick to include in this PR")
+            for r in requests:
+                label = (f"{r['part_name']} × {r['qty']} — {r['requested_by']}, {fmt_ist(r['created_at'])}"
+                         + (f" · {r['reason']}" if r.get("reason") else ""))
+                if st.checkbox(label, key=f"pr_req_{r['id']}"):
+                    chosen_requests.append(r)
+                    if r["part_id"] not in draft:
+                        draft[r["part_id"]] = int(r["qty"])
+
+    if not draft:
+        st.info("Add items above. Low-stock items can be added in one click.")
+        return
+
+    # Rebuild the editor whenever the item list changes so row edits never land on the wrong item.
+    keys_sig = tuple(draft)
+    if st.session_state.get("pr_editor_keys") != keys_sig:
+        st.session_state["pr_editor_keys"] = keys_sig
+        st.session_state["pr_editor_nonce"] = st.session_state.get("pr_editor_nonce", 0) + 1
+    history = item_purchase_history(conn, list(draft))
+    rows = []
+    for code, qty in draft.items():
+        p = by_code.get(code)
+        if not p:
+            continue
+        h = history.get(code) or {}
+        last = ""
+        if h.get("vendor_name") or h.get("rate"):
+            last = " · ".join(x for x in [
+                f"₹{float(h['rate']):,.2f}" if h.get("rate") else "",
+                h.get("vendor_name") or "",
+                f"{h['lead_days']} days" if h.get("lead_days") is not None else "",
+            ] if x)
+        rows.append({
+            "part_id": code,
+            "name": p["name"],
+            "in_stock": int(p["quantity"] or 0),
+            "min": int(p["min_level"] or 0),
+            "qty": int(qty),
+            "unit": p["unit"],
+            "already_on_order": on_order_text(oo.get(code)),
+            "last_purchase": last,
+        })
+    df = pd.DataFrame(rows)
+    st.markdown("**Items on this PR**")
+    edited = st.data_editor(
+        df,
+        key=f"pr_lines_editor_{st.session_state.get('pr_editor_nonce', 0)}",
+        hide_index=True,
+        width="stretch",
+        num_rows="delete",
+        disabled=["part_id", "name", "in_stock", "min", "unit", "already_on_order", "last_purchase"],
+        column_config={
+            "part_id": st.column_config.TextColumn("Code"),
+            "name": st.column_config.TextColumn("Item", width="medium"),
+            "in_stock": st.column_config.NumberColumn("Stock", format="%d"),
+            "min": st.column_config.NumberColumn("Min", format="%d"),
+            "qty": st.column_config.NumberColumn("Order qty ✏️", min_value=1, step=1, format="%d", required=True),
+            "unit": st.column_config.TextColumn("Unit"),
+            "already_on_order": st.column_config.TextColumn("⚠ Already on order"),
+            "last_purchase": st.column_config.TextColumn("Last purchase"),
+        },
+    )
+    # keep the draft in step with edits / deleted rows
+    st.session_state["pr_draft"] = {
+        r["part_id"]: int(r["qty"] or 1) for r in edited.to_dict("records") if r.get("part_id")
+    }
+    dupes = [r for r in edited.to_dict("records") if r.get("already_on_order")]
+    if dupes:
+        st.warning(
+            f"⚠ {len(dupes)} item(s) are already on an open PR — check before ordering again: "
+            + "; ".join(f"{r['name']} ({r['already_on_order']})" for r in dupes[:4])
+        )
+
+    with st.form("pr_new_form", border=True):
+        c1, c2, c3 = st.columns([0.4, 0.3, 0.3])
+        requester = c1.text_input("Requested by *", placeholder="Full name — saved as proof")
+        required_by = c2.date_input(
+            "Required by *", value=_today_date() + dt.timedelta(days=7), min_value=_today_date(), format="DD/MM/YYYY"
+        )
+        priority = c3.selectbox("Priority", list(PR_PRIORITIES))
+        reason = st.text_input("Reason / job / machine", placeholder="e.g. Low stock, UTM-120 order for XYZ Ltd")
+        submit = st.form_submit_button(
+            f"🧾  Raise PR ({len(st.session_state['pr_draft'])} item(s))", type="primary", width="stretch"
+        )
+    if submit:
+        try:
+            pr_no = create_pr(
+                conn,
+                [{"part_id": k, "qty": v} for k, v in st.session_state["pr_draft"].items()],
+                requester,
+                required_by,
+                priority,
+                reason,
+                raised_by=st.session_state.get("user", "manager"),
+                request_ids=[r["id"] for r in chosen_requests],
+            )
+        except ValueError as exc:
+            st.error(str(exc))
+            return
+        bump_data_version()
+        st.session_state["pr_draft"] = {}
+        st.session_state["pr_editor_nonce"] = st.session_state.get("pr_editor_nonce", 0) + 1
+        for r in chosen_requests:
+            st.session_state.pop(f"pr_req_{r['id']}", None)
+        st.session_state["pr_notice"] = f"✅ {pr_no} raised. Mark it Ordered once the order is placed."
+        st.session_state["pr_view_next"] = "Open PRs"
+        st.rerun()
+
+
+# ── PR detail dialog ───────────────────────────────────────────────────────
+EVENT_LABELS = {
+    "raised": "🧾 Raised",
+    "ordered": "📦 Ordered",
+    "received": "📥 Received",
+    "date_changed": "📅 Date changed",
+    "note": "📝 Note",
+    "closed_short": "⏹ Closed short",
+    "cancelled": "✖ Cancelled",
+}
+
+
+def pr_print_html(detail):
+    pr, lines, events = detail["pr"], detail["lines"], detail["events"]
+    rows = "".join(
+        f"<tr><td>{i}</td><td>{esc(l['part_id'])}</td><td>{esc(l['part_name'])}</td>"
+        f"<td class=n>{l['qty_requested']}</td><td>{esc(l['unit'])}</td><td class=n>{l['qty_received']}</td>"
+        f"<td class=n>{l['qty_requested'] - l['qty_received']}</td>"
+        f"<td class=n>{'' if l.get('rate') is None else f'{float(l['rate']):,.2f}'}</td></tr>"
+        for i, l in enumerate(lines, start=1)
+    )
+    trail = "".join(
+        f"<tr><td>{fmt_ist(e['created_at'])}</td><td>{esc(EVENT_LABELS.get(e['event'], e['event']).split(' ', 1)[-1])}</td>"
+        f"<td>{esc(e['actor'])}</td><td>{esc(e['detail'])}</td></tr>"
+        for e in events
+    )
+    return f"""<!doctype html><html><head><meta charset="utf-8"><title>{esc(pr['pr_no'])}</title>
+<style>
+ body{{font-family:Arial,Helvetica,sans-serif;color:#000;margin:24px;font-size:12px}}
+ h1{{font-size:20px;margin:0}} .sub{{margin:2px 0 14px 0}}
+ table{{border-collapse:collapse;width:100%;margin:8px 0 16px 0}}
+ th,td{{border:1px solid #000;padding:5px 6px;text-align:left;vertical-align:top}}
+ th{{background:#e5e5e5}} td.n{{text-align:right}}
+ .grid td{{border:1px solid #000;width:25%}} .lbl{{font-weight:bold}}
+ .sign{{display:flex;gap:24px;margin-top:40px}} .sign div{{flex:1;border-top:1px solid #000;padding-top:4px;text-align:center}}
+ @media print{{body{{margin:10mm}}}}
+</style></head><body>
+<h1>EQVIMECH PVT. LTD. — PURCHASE REQUISITION</h1>
+<div class="sub">Taloja MIDC, Navi Mumbai · Printed {dt.datetime.now(tz=ZoneInfo(APP_TIMEZONE)):%d-%b-%Y %H:%M} IST</div>
+<table class="grid">
+<tr><td class=lbl>PR No.</td><td>{esc(pr['pr_no'])}</td><td class=lbl>Status</td><td>{esc(PR_STATUS_LABELS.get(pr['status'], pr['status']))}</td></tr>
+<tr><td class=lbl>Requested by</td><td>{esc(pr['requester'])}</td><td class=lbl>Raised on</td><td>{fmt_ist(pr['created_at'])}</td></tr>
+<tr><td class=lbl>Required by</td><td>{fmt_date(pr['required_by'])}</td><td class=lbl>Priority</td><td>{esc(pr['priority'])}</td></tr>
+<tr><td class=lbl>Vendor</td><td>{esc(pr.get('vendor_name') or '-')}</td><td class=lbl>PO / Ref</td><td>{esc(pr.get('po_ref') or '-')}</td></tr>
+<tr><td class=lbl>Ordered on</td><td>{fmt_ist(pr.get('ordered_at')) or '-'}</td><td class=lbl>Expected</td><td>{fmt_date(pr.get('expected_date')) or '-'}</td></tr>
+<tr><td class=lbl>Reason</td><td colspan=3>{esc(pr.get('reason') or '-')}</td></tr>
+</table>
+<table><tr><th>#</th><th>Code</th><th>Item</th><th>Qty</th><th>Unit</th><th>Received</th><th>Pending</th><th>Rate</th></tr>{rows}</table>
+<b>Record of actions (from the app's permanent log)</b>
+<table><tr><th style="width:18%">Date &amp; time (IST)</th><th style="width:13%">Action</th><th style="width:15%">By</th><th>Details</th></tr>{trail}</table>
+<div class="sign"><div>Requested by</div><div>Store / Purchase</div><div>Received by</div></div>
+<script>window.onload=function(){{window.print()}}</script>
+</body></html>"""
+
+
+@st.dialog("Purchase requisition", width="large")
+def show_pr_dialog():
+    with db_session() as conn:
+        _pr_dialog_body(conn)
+
+
+def _pr_dialog_body(conn):
+    pr_id = st.session_state.get("pr_dialog_id")
+    detail = get_pr_detail(conn, pr_id) if pr_id else None
+    if not detail:
+        st.session_state.pop("pr_dialog_id", None)
+        st.rerun()
+        return
+    pr, lines, events = detail["pr"], detail["lines"], detail["events"]
+    overdue = pr_overdue_days(pr)
+    status = PR_STATUS_LABELS.get(pr["status"], pr["status"])
+    pills = [
+        f"<span class='pill p-neutral'>{esc(status)}</span>",
+        f"<span class='pill p-neutral'>Requested by {esc(pr['requester'])}</span>",
+        f"<span class='pill p-neutral'>Raised {fmt_ist(pr['created_at'])}</span>",
+        f"<span class='pill p-neutral'>Required by {fmt_date(pr['required_by'])}</span>",
+    ]
+    if pr.get("expected_date"):
+        pills.append(f"<span class='pill p-neutral'>Expected {fmt_date(pr['expected_date'])}</span>")
+    if pr.get("vendor_name"):
+        pills.append(f"<span class='pill p-neutral'>Vendor {esc(pr['vendor_name'])}</span>")
+    if PRIORITY_MARK.get(pr["priority"]):
+        pills.append(f"<span class='pill p-low'>{esc(pr['priority'])}</span>")
+    if overdue:
+        pills.append(f"<span class='pill p-zero'>Overdue {overdue} day(s)</span>")
+    st.markdown(
+        f"<div class='item-card'><div class='item-name-row'><span class='item-name'>{esc(pr['pr_no'])}</span></div>"
+        f"<div class='item-desc'>{esc(pr.get('reason') or '')}</div><div class='pill-row'>{''.join(pills)}</div></div>",
+        unsafe_allow_html=True,
+    )
+
+    ldf = pd.DataFrame([
+        {
+            "Item": l["part_name"], "Code": l["part_id"], "Ordered": l["qty_requested"],
+            "Received": l["qty_received"], "Pending": l["qty_requested"] - l["qty_received"],
+            "Unit": l["unit"], "Stock now": l.get("stock_now"),
+            "Rate": None if l.get("rate") is None else float(l["rate"]),
+        }
+        for l in lines
+    ])
+    if ldf["Rate"].isna().all():
+        ldf = ldf.drop(columns=["Rate"])
+    st.dataframe(ldf, hide_index=True, width="stretch", height=min(320, 38 + 35 * len(ldf)),
+                 column_config={"Rate": st.column_config.NumberColumn("Rate ₹", format="%.2f")})
+
+    is_open = pr["status"] in PR_OPEN_STATUSES
+    actions = []
+    if pr["status"] == "raised":
+        actions.append("📦 Mark ordered")
+    if is_open:
+        actions.append("📥 Receive goods")
+    if pr["status"] in ("ordered", "partial"):
+        actions.append("📅 Change expected date")
+    actions += ["📝 Add note"]
+    if is_open:
+        actions.append("⏹ Close / cancel")
+
+    action = st.segmented_control("Action", actions, key=f"pr_action_{pr_id}", label_visibility="collapsed")
+    error = None
+    done_msg = None
+    if action == "📦 Mark ordered":
+        vendors = [v["name"] for v in _cached_vendors(conn, data_version())]
+        with st.form(f"pr_order_{pr_id}", border=True):
+            c1, c2 = st.columns(2)
+            by = c1.text_input("Ordered by *", placeholder="Your name")
+            exp = c2.date_input("Expected delivery *", value=max(_today_date(), pr["required_by"] or _today_date()),
+                                min_value=_today_date(), format="DD/MM/YYYY")
+            c3, c4 = st.columns(2)
+            vendor = c3.selectbox("Vendor (optional)", vendors, index=None, accept_new_options=True,
+                                  placeholder="Pick or type a new vendor")
+            po = c4.text_input("PO no. / quote ref (optional)")
+            st.caption("Rates are optional — they build the 'last purchase price' shown on future PRs.")
+            rates = {}
+            rate_cols = st.columns(min(3, max(1, len(lines))))
+            for i, l in enumerate(lines):
+                rates[l["id"]] = rate_cols[i % len(rate_cols)].number_input(
+                    f"Rate ₹ — {l['part_name'][:28]}", min_value=0.0, step=1.0, value=0.0, format="%.2f",
+                    key=f"pr_rate_{pr_id}_{l['id']}",
+                )
+            note = st.text_input("Note (optional)")
+            if st.form_submit_button("Confirm order placed", type="primary", width="stretch"):
+                try:
+                    mark_pr_ordered(conn, pr_id, by, exp, vendor or "", po, rates, note)
+                    done_msg = f"{pr['pr_no']} marked ordered."
+                except ValueError as exc:
+                    error = str(exc)
+    elif action == "📥 Receive goods":
+        pending_lines = [l for l in lines if l["qty_requested"] > l["qty_received"]]
+        fill_all = st.checkbox("Everything pending has arrived (fill all quantities)", key=f"pr_recv_all_{pr_id}")
+        with st.form(f"pr_recv_{pr_id}", border=True):
+            st.caption("Count what actually arrived — items left at 0 stay pending. "
+                       "Stock is added automatically and logged in History.")
+            qtys = {}
+            cols = st.columns(2)
+            for i, l in enumerate(pending_lines):
+                pending = l["qty_requested"] - l["qty_received"]
+                qtys[l["id"]] = cols[i % 2].number_input(
+                    f"{l['part_name'][:40]} — pending {pending} {l['unit']}", min_value=0, max_value=pending,
+                    step=1, value=pending if fill_all else 0, key=f"pr_rq_{pr_id}_{l['id']}_{int(fill_all)}",
+                )
+            c1, c2 = st.columns(2)
+            by = c1.text_input("Received by *", placeholder="Your name")
+            grn = c2.text_input("GRN / challan / invoice no. *")
+            if st.form_submit_button("Confirm goods received", type="primary", width="stretch"):
+                try:
+                    new_status = receive_pr(conn, pr_id, qtys, by, grn)
+                    done_msg = ("All items received — PR complete." if new_status == "received"
+                                else "Part receipt saved. The rest stays open as pending.")
+                except ValueError as exc:
+                    error = str(exc)
+    elif action == "📅 Change expected date":
+        with st.form(f"pr_date_{pr_id}", border=True):
+            c1, c2 = st.columns(2)
+            by = c1.text_input("Your name *")
+            new_date = c2.date_input("New expected date *", value=pr.get("expected_date") or _today_date(),
+                                     format="DD/MM/YYYY")
+            why = st.text_input("Reason for the change *", placeholder="e.g. Vendor said dispatch delayed")
+            if st.form_submit_button("Save new date", type="primary", width="stretch"):
+                try:
+                    update_pr_expected_date(conn, pr_id, by, new_date, why)
+                    done_msg = "Expected date updated (old date kept in the log)."
+                except ValueError as exc:
+                    error = str(exc)
+    elif action == "📝 Add note":
+        with st.form(f"pr_note_{pr_id}", border=True):
+            by = st.text_input("Your name *")
+            note = st.text_area("Note *", placeholder="e.g. Called vendor, dispatch on Monday", height=80)
+            if st.form_submit_button("Add note", type="primary", width="stretch"):
+                try:
+                    add_pr_note(conn, pr_id, by, note)
+                    done_msg = "Note added."
+                except ValueError as exc:
+                    error = str(exc)
+    elif action == "⏹ Close / cancel":
+        received_any = any(l["qty_received"] for l in lines)
+        with st.form(f"pr_close_{pr_id}", border=True):
+            st.caption(
+                "Close short: stop waiting for the pending quantity." if received_any
+                else "Cancel: nothing was received and the PR is no longer needed."
+            )
+            by = st.text_input("Your name *")
+            why = st.text_input("Reason *")
+            label = "Close short" if received_any else "Cancel PR"
+            if st.form_submit_button(label, type="primary", width="stretch"):
+                try:
+                    close_pr(conn, pr_id, by, why, cancel=not received_any)
+                    done_msg = f"{pr['pr_no']} {'closed' if received_any else 'cancelled'}."
+                except ValueError as exc:
+                    error = str(exc)
+    if error:
+        st.error(error)
+    if done_msg:
+        bump_data_version()
+        st.session_state.pop(f"pr_action_{pr_id}", None)
+        st.session_state.pop("pr_dialog_id", None)
+        st.session_state["pr_notice"] = f"✅ {pr['pr_no']}: {done_msg}"
+        st.rerun()
+
+    st.markdown("**Record of actions** — permanent, cannot be edited")
+    for e in events:
+        st.markdown(
+            f"<div class='pr-event'><span class='pr-ev-when'>{fmt_ist(e['created_at'])}</span>"
+            f"<span class='pr-ev-what'>{esc(EVENT_LABELS.get(e['event'], e['event']))}</span>"
+            f"<span class='pr-ev-who'>{esc(e['actor'])}</span>"
+            f"<div class='pr-ev-detail'>{esc(e['detail'])}</div></div>",
+            unsafe_allow_html=True,
+        )
+
+    c1, c2 = st.columns(2)
+    c1.download_button(
+        "🖨  Print PR sheet",
+        pr_print_html(detail).encode("utf-8"),
+        file_name=f"{pr['pr_no']}.html",
+        mime="text/html",
+        key=f"pr_print_{pr_id}",
+        width="stretch",
+        help="Downloads a print-ready page (black & white). Open it and it prints.",
+    )
+    if c2.button("Close", key=f"pr_close_dialog_{pr_id}", type="secondary", width="stretch"):
+        st.session_state.pop("pr_dialog_id", None)
+        st.rerun()
+
+
+# ── Open PRs list ──────────────────────────────────────────────────────────
+def _pr_card(pr, today):
+    overdue = pr_overdue_days(pr, today)
+    received = int(pr["qty_received"] or 0)
+    requested = int(pr["qty_requested"] or 0)
+    status = PR_STATUS_LABELS.get(pr["status"], pr["status"])
+    bits = [status]
+    if PRIORITY_MARK.get(pr["priority"]):
+        bits.append(PRIORITY_MARK[pr["priority"]])
+    due = pr_due(pr)
+    if overdue:
+        bits.append(f"🔴 OVERDUE {overdue}d")
+    elif due:
+        left = (due - today).days
+        bits.append(f"due {due:%d-%b}" + (" (today)" if left == 0 else f" ({left}d)"))
+    if pr["status"] == "partial":
+        bits.append(f"{received}/{requested} received")
+    bits.append(f"{pr['days_open']}d open")
+    items = pr.get("items") or ""
+    if len(items) > 110:
+        items = items[:107] + "…"
+    return f"{pr['pr_no']}  ·  {'  ·  '.join(bits)}\n{items}  —  by {pr['requester']}"
+
+
+def _pr_open_view(conn):
+    today = _today_date()
+    search = (live_search_input("Search PRs", "PR no, item, requester, vendor…", "pr_open_search") or "").strip()
+    prs = _cached_prs(conn, data_version(), PR_OPEN_STATUSES, search, str(today))
+    if not prs:
+        st.info("No open purchase requisitions." if not search else "No open PR matches your search.")
+        return
+    prs.sort(key=lambda p: (-pr_overdue_days(p, today), {"Breakdown": 0, "Urgent": 1}.get(p["priority"], 2),
+                            pr_due(p) or dt.date.max))
+    for pr in prs:
+        if st.button(_pr_card(pr, today), key=f"pr_open_{pr['id']}", width="stretch", type="secondary"):
+            st.session_state["pr_dialog_id"] = pr["id"]
+            st.rerun()
+
+
+# ── Requests from the floor ────────────────────────────────────────────────
+def _pr_requests_view(conn):
+    reqs = _cached_requests(conn, data_version())
+    if not reqs:
+        st.info("No open requests from operators.")
+        return
+    st.caption("Operators send these from Pick / Items when stock is short. Include them in a PR from New PR.")
+    oo = on_order(conn)
+    df = pd.DataFrame([
+        {"Requested": fmt_ist(r["created_at"]), "By": r["requested_by"], "Item": r["part_name"],
+         "Qty": r["qty"], "Unit": r["unit"], "For": r.get("reason") or "", "Stock now": r.get("stock_now"),
+         "Already on order": on_order_text(oo.get(r["part_id"]))}
+        for r in reqs
+    ])
+    st.dataframe(df, hide_index=True, width="stretch")
+    c1, c2 = st.columns(2)
+    if c1.button("➕  Put all requests into a new PR", key="pr_req_all", type="primary", width="stretch"):
+        draft = _pr_draft()
+        for r in reqs:
+            draft[r["part_id"]] = draft.get(r["part_id"], 0) + int(r["qty"])
+            st.session_state[f"pr_req_{r['id']}"] = True
+        st.session_state["pr_view_next"] = "New PR"
+        st.rerun()
+    with c2.popover("Dismiss a request", width="stretch"):
+        pick = st.selectbox("Request", [r["id"] for r in reqs],
+                            format_func=lambda i: next(f"{r['part_name']} × {r['qty']} — {r['requested_by']}"
+                                                       for r in reqs if r["id"] == i), key="pr_dismiss_pick")
+        by = st.text_input("Your name *", key="pr_dismiss_by")
+        why = st.text_input("Reason *", key="pr_dismiss_why", placeholder="e.g. Enough stock in rack B")
+        if st.button("Dismiss", key="pr_dismiss_go"):
+            try:
+                dismiss_stock_request(conn, pick, by, why)
+                bump_data_version()
+                st.rerun()
+            except ValueError as exc:
+                st.error(str(exc))
+
+
+# ── Register ───────────────────────────────────────────────────────────────
+def _pr_register_view(conn):
+    today = _today_date()
+    c1, c2 = st.columns([0.35, 0.65])
+    status_pick = c1.selectbox(
+        "Status", ["All", "Open", *PR_STATUS_LABELS.values()], key="pr_reg_status")
+    with c2:
+        search = (live_search_input("Search register", "PR no, item, requester, vendor, PO…", "pr_reg_search") or "").strip()
+    if status_pick == "All":
+        statuses = ()
+    elif status_pick == "Open":
+        statuses = PR_OPEN_STATUSES
+    else:
+        statuses = tuple(k for k, v in PR_STATUS_LABELS.items() if v == status_pick)
+    prs = _cached_prs(conn, data_version(), statuses, search, str(today))
+    if not prs:
+        st.info("No PRs found.")
+        return
+    df = pd.DataFrame([
+        {
+            "PR no": p["pr_no"], "Raised (IST)": fmt_ist(p["created_at"]), "Requested by": p["requester"],
+            "Priority": p["priority"], "Status": PR_STATUS_LABELS.get(p["status"], p["status"]),
+            "Required by": fmt_date(p["required_by"]), "Vendor": p.get("vendor_name") or "",
+            "PO / ref": p.get("po_ref") or "", "Ordered (IST)": fmt_ist(p.get("ordered_at")),
+            "Ordered by": p.get("ordered_by") or "", "Expected": fmt_date(p.get("expected_date")),
+            "Completed (IST)": fmt_ist(p.get("received_at")),
+            "Qty ordered": int(p["qty_requested"] or 0), "Qty received": int(p["qty_received"] or 0),
+            "Value ₹": float(p["value"] or 0) or None, "Days open": p["days_open"],
+            "Overdue days": pr_overdue_days(p, today) or None, "Items": p.get("items") or "",
+            "Closed by": p.get("closed_by") or "", "Close reason": p.get("close_reason") or "",
+            "_id": p["id"],
+        }
+        for p in prs
+    ])
+    st.caption(f"{len(df)} PR(s). Click a row to open it.")
+    sel = st.dataframe(
+        df.drop(columns=["_id"]), hide_index=True, width="stretch", height=min(440, 38 + 35 * len(df)),
+        on_select="rerun", selection_mode="single-row", key="pr_reg_table",
+        column_config={"Value ₹": st.column_config.NumberColumn(format="%.2f")},
+    )
+    rows = (sel.selection.rows if sel else []) or []
+    if rows:
+        st.session_state["pr_dialog_id"] = int(df.iloc[rows[0]]["_id"])
+        st.session_state.pop("pr_reg_table", None)
+        st.rerun()
+    st.download_button(
+        "⬇ Export PR register (Excel CSV)",
+        df.drop(columns=["_id"]).to_csv(index=False).encode("utf-8-sig"),
+        file_name=f"pr_register_{_today_ist()}.csv",
+        mime="text/csv",
+        key="pr_reg_export",
+    )
+
+
+# ── Vendors ────────────────────────────────────────────────────────────────
+def _pr_vendors_view(conn):
+    report = _cached_vendor_report(conn, data_version(), _today_ist())
+    st.markdown("**Vendor delivery performance**")
+    if report:
+        st.dataframe(pd.DataFrame([
+            {
+                "Vendor": r["vendor"], "Orders": r["orders"], "Open": r["open_orders"],
+                "Completed": r["completed"],
+                "On time %": round(100 * r["on_time"] / r["completed"]) if r["completed"] else None,
+                "Late now": r["overdue_now"],
+                "Avg lead days": float(r["avg_lead_days"]) if r["avg_lead_days"] is not None else None,
+                "Last order": fmt_ist(r["last_order"]),
+            }
+            for r in report
+        ]), hide_index=True, width="stretch")
+    else:
+        st.info("No orders with a vendor yet. Pick a vendor when marking a PR ordered to build this report.")
+
+    vendors = _cached_vendors(conn, data_version())
+    st.markdown("**Vendor list**")
+    if vendors:
+        st.dataframe(pd.DataFrame([
+            {"Vendor": v["name"], "Phone": v["phone"], "Email": v["email"], "Notes": v["notes"]} for v in vendors
+        ]), hide_index=True, width="stretch")
+    with st.expander("➕ Add or update a vendor"):
+        with st.form("vendor_form", clear_on_submit=True, border=False):
+            c1, c2, c3 = st.columns(3)
+            name = c1.text_input("Vendor name *")
+            phone = c2.text_input("Phone")
+            email = c3.text_input("Email")
+            notes = st.text_input("Notes", placeholder="Items supplied, payment terms…")
+            if st.form_submit_button("Save vendor", type="primary"):
+                try:
+                    save_vendor(conn, name, phone, email, notes)
+                    bump_data_version()
+                    st.success(f"Saved {name}.")
+                except ValueError as exc:
+                    st.error(str(exc))
+
+
+def purchase_page(conn):
+    today = _today_date()
+    open_prs = _cached_prs(conn, data_version(), PR_OPEN_STATUSES, "", str(today))
+    reqs = _cached_requests(conn, data_version())
+    overdue = [p for p in open_prs if pr_overdue_days(p, today)]
+    _section_title("Purchase requisitions", "Raise, order and receive — every step is stamped with name, date and time.")
+
+    notice = st.session_state.pop("pr_notice", None)
+    if notice:
+        st.success(notice)
+
+    awaiting = sum(1 for p in open_prs if p["status"] == "raised")
+    st.markdown(
+        f"""
+        <div class="pr-stats">
+            <div><b>{len(open_prs)}</b><span>Open PRs</span></div>
+            <div class="{'pr-bad' if overdue else ''}"><b>{len(overdue)}</b><span>Overdue</span></div>
+            <div><b>{awaiting}</b><span>Not ordered yet</span></div>
+            <div class="{'pr-warn' if reqs else ''}"><b>{len(reqs)}</b><span>Floor requests</span></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    nxt = st.session_state.pop("pr_view_next", None)
+    if nxt:
+        st.session_state["pr_view"] = nxt
+    labels = {
+        "Open PRs": f"Open PRs ({len(open_prs)})",
+        "New PR": "➕ New PR",
+        "Requests": f"Requests ({len(reqs)})" if reqs else "Requests",
+        "Register": "Register",
+        "Vendors": "Vendors",
+    }
+    st.session_state.setdefault("pr_view", "Open PRs")
+    view = st.segmented_control(
+        "View", PR_VIEWS, key="pr_view", format_func=lambda v: labels[v],
+        label_visibility="collapsed", width="stretch",
+    ) or "Open PRs"
+
+    if view == "New PR":
+        _pr_new_view(conn)
+    elif view == "Requests":
+        _pr_requests_view(conn)
+    elif view == "Register":
+        _pr_register_view(conn)
+    elif view == "Vendors":
+        _pr_vendors_view(conn)
+    else:
+        _pr_open_view(conn)
+
+    if st.session_state.get("pr_dialog_id"):
+        show_pr_dialog()
+
+
 def render_main_navigation(options, key):
+    jump = st.session_state.pop("_nav_to", None)
+    if jump in options:
+        st.session_state[key] = jump
     default_option = st.session_state.get(key, options[0])
     if default_option not in options:
         default_option = options[0]
@@ -2453,6 +3273,8 @@ def clear_inactive_page_state(active_section):
         st.session_state.pop("return_dialog_issue_id", None)
     if active_section != "📦 Items":
         st.session_state.pop("items_dialog_part_id", None)
+    if active_section != PR_NAV:
+        st.session_state.pop("pr_dialog_id", None)
 
 
 def main():
@@ -2495,6 +3317,21 @@ def render_app(conn):
             """,
             unsafe_allow_html=True,
         )
+    if role == "manager":
+        today = _today_date()
+        open_prs = _cached_prs(conn, data_version(), PR_OPEN_STATUSES, "", str(today))
+        late = sum(1 for p in open_prs if pr_overdue_days(p, today))
+        reqs = len(_cached_requests(conn, data_version()))
+        if late or reqs:
+            parts_msg = []
+            if late:
+                parts_msg.append(f"🔴 {late} PR(s) overdue")
+            if reqs:
+                parts_msg.append(f"📨 {reqs} item request(s) from the floor")
+            st.markdown(
+                f'<div class="low-stock-banner">{" · ".join(parts_msg)} — see Purchase</div>',
+                unsafe_allow_html=True,
+            )
     if alerts and role == "manager":
         out_count = sum(1 for p in alerts if int(p.get("quantity") or 0) <= 0)
         st.markdown(
@@ -2508,7 +3345,7 @@ def render_app(conn):
     # controlled navigation: render only the active section so transient state
     # does not persist after users switch away and come back.
     if role == "manager":
-        nav_options = ["📦 Items", "⬆ Pick", "📥 Inward", "↩ Returnables", "🗂 Master", "📊 Dashboard", "📋 History", "🔔 Alerts"]
+        nav_options = ["📦 Items", "⬆ Pick", "📥 Inward", "↩ Returnables", PR_NAV, "🗂 Master", "📊 Dashboard", "📋 History", "🔔 Alerts"]
         active_section = render_main_navigation(nav_options, "main_nav_manager")
         clear_inactive_page_state(active_section)
 
@@ -2520,6 +3357,8 @@ def render_app(conn):
             deposit_stock_page(conn)
         elif active_section == "↩ Returnables":
             returnables_page(conn)
+        elif active_section == PR_NAV:
+            purchase_page(conn)
         elif active_section == "🗂 Master":
             item_master_page(conn)
         elif active_section == "📊 Dashboard":

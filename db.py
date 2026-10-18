@@ -5,6 +5,7 @@ import json
 import os
 import threading
 import time
+from zoneinfo import ZoneInfo
 
 import psycopg2
 import psycopg2.extras
@@ -290,6 +291,7 @@ def init_db(conn):
         """
     )
     c.execute(SAVE_MASTER_FUNCTION_SQL)
+    c.execute(PR_SCHEMA_SQL)
     conn.commit()
     ensure_columns(conn)
     normalize_existing_categories(conn)
@@ -746,6 +748,10 @@ BEGIN
             WHERE id = cur.id;
             IF old_code IS DISTINCT FROM e->>'part_id' THEN
                 UPDATE transactions SET part_id = e->>'part_id' WHERE part_id = old_code;
+                IF to_regclass('pr_lines') IS NOT NULL THEN
+                    UPDATE pr_lines SET part_id = e->>'part_id' WHERE part_id = old_code;
+                    UPDATE stock_requests SET part_id = e->>'part_id' WHERE part_id = old_code;
+                END IF;
             END IF;
             IF new_qty IS DISTINCT FROM cur.quantity THEN
                 n_adjusted := n_adjusted + 1;
@@ -950,6 +956,9 @@ def return_issue_material(conn, issue_tx_id, performed_by, performed_role, note=
 @transactional
 def wipe_all_data(conn):
     c = conn.cursor()
+    # TRUNCATE bypasses the "PR history is permanent" row trigger on purpose:
+    # this is the explicit, code-protected full wipe.
+    c.execute("TRUNCATE stock_requests, pr_events, pr_lines, purchase_requisitions, vendors RESTART IDENTITY")
     c.execute("DELETE FROM transactions")
     c.execute("DELETE FROM parts")
     conn.commit()
@@ -1573,3 +1582,632 @@ def import_parts_from_csv(conn, records, pre_analyzed_rows=None, performed_by="m
             raise
 
     return summary
+
+
+# ===========================================================================
+# Purchase Requisitions (PR)
+# ---------------------------------------------------------------------------
+# Every PR action is written to pr_events with the person's name and the
+# database server's own clock (NOW()), and that log cannot be edited or deleted
+# afterwards (a trigger blocks it). That log is the proof trail.
+# ===========================================================================
+
+PR_STATUS_LABELS = {
+    "raised": "Raised",
+    "ordered": "Ordered",
+    "partial": "Part received",
+    "received": "Received",
+    "closed_short": "Closed (short)",
+    "cancelled": "Cancelled",
+}
+PR_OPEN_STATUSES = ("raised", "ordered", "partial")
+PR_PRIORITIES = ("Normal", "Urgent", "Breakdown")
+
+PR_SCHEMA_SQL = r"""
+CREATE TABLE IF NOT EXISTS vendors (
+    id SERIAL PRIMARY KEY,
+    name TEXT UNIQUE NOT NULL,
+    phone TEXT DEFAULT '',
+    email TEXT DEFAULT '',
+    notes TEXT DEFAULT '',
+    active INTEGER DEFAULT 1,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS purchase_requisitions (
+    id SERIAL PRIMARY KEY,
+    pr_no TEXT UNIQUE,
+    status TEXT NOT NULL DEFAULT 'raised',
+    priority TEXT DEFAULT 'Normal',
+    requester TEXT NOT NULL,
+    reason TEXT DEFAULT '',
+    required_by DATE,
+    raised_by TEXT DEFAULT '',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    vendor_id INTEGER REFERENCES vendors(id),
+    vendor_name TEXT DEFAULT '',
+    po_ref TEXT DEFAULT '',
+    ordered_by TEXT DEFAULT '',
+    ordered_at TIMESTAMPTZ,
+    expected_date DATE,
+    received_at TIMESTAMPTZ,
+    closed_by TEXT DEFAULT '',
+    closed_at TIMESTAMPTZ,
+    close_reason TEXT DEFAULT '',
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS pr_lines (
+    id SERIAL PRIMARY KEY,
+    pr_id INTEGER NOT NULL REFERENCES purchase_requisitions(id),
+    part_id TEXT NOT NULL,
+    part_name TEXT DEFAULT '',
+    unit TEXT DEFAULT 'Nos',
+    qty_requested INTEGER NOT NULL CHECK (qty_requested > 0),
+    qty_received INTEGER NOT NULL DEFAULT 0 CHECK (qty_received >= 0),
+    rate NUMERIC(14, 2),
+    stock_at_request INTEGER DEFAULT 0,
+    min_level_at_request INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS pr_events (
+    id SERIAL PRIMARY KEY,
+    pr_id INTEGER NOT NULL REFERENCES purchase_requisitions(id),
+    event TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    detail TEXT DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS stock_requests (
+    id SERIAL PRIMARY KEY,
+    part_id TEXT NOT NULL,
+    part_name TEXT DEFAULT '',
+    unit TEXT DEFAULT 'Nos',
+    qty INTEGER NOT NULL CHECK (qty > 0),
+    requested_by TEXT NOT NULL,
+    reason TEXT DEFAULT '',
+    stock_at_request INTEGER DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'open',
+    pr_id INTEGER REFERENCES purchase_requisitions(id),
+    handled_by TEXT DEFAULT '',
+    handled_at TIMESTAMPTZ,
+    handle_note TEXT DEFAULT '',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_pr_lines_pr ON pr_lines(pr_id);
+CREATE INDEX IF NOT EXISTS idx_pr_lines_part ON pr_lines(part_id);
+CREATE INDEX IF NOT EXISTS idx_pr_events_pr ON pr_events(pr_id);
+CREATE INDEX IF NOT EXISTS idx_pr_status ON purchase_requisitions(status);
+
+CREATE OR REPLACE FUNCTION inv_pr_events_readonly() RETURNS trigger
+LANGUAGE plpgsql AS $fn$
+BEGIN
+    RAISE EXCEPTION 'PR history is permanent and cannot be changed or deleted';
+END;
+$fn$;
+DROP TRIGGER IF EXISTS trg_pr_events_readonly ON pr_events;
+CREATE TRIGGER trg_pr_events_readonly
+    BEFORE UPDATE OR DELETE ON pr_events
+    FOR EACH ROW EXECUTE FUNCTION inv_pr_events_readonly();
+"""
+
+
+def init_pr_schema(conn):
+    c = conn.cursor()
+    c.execute(PR_SCHEMA_SQL)
+    if not conn.autocommit:
+        conn.commit()
+
+
+def _clean_name(value, label):
+    text = " ".join(str(value or "").split())
+    if len(text) < 2:
+        raise ValueError(f"{label} is required (this is recorded as proof).")
+    return text[:80]
+
+
+def _pr_event(c, pr_id, event, actor, detail=""):
+    c.execute(
+        "INSERT INTO pr_events (pr_id, event, actor, detail) VALUES (%s, %s, %s, %s)",
+        (pr_id, event, actor, detail),
+    )
+
+
+def _lock_pr(c, pr_id):
+    c.execute("SELECT * FROM purchase_requisitions WHERE id = %s FOR UPDATE", (pr_id,))
+    pr = c.fetchone()
+    if pr is None:
+        raise ValueError("PR not found")
+    return pr
+
+
+def _vendor_id(c, vendor_name):
+    name = " ".join(str(vendor_name or "").split())
+    if not name:
+        return None, ""
+    c.execute(
+        """
+        INSERT INTO vendors (name) VALUES (%s)
+        ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+        RETURNING id, name
+        """,
+        (name,),
+    )
+    row = c.fetchone()
+    return row["id"], row["name"]
+
+
+@transactional
+def create_pr(conn, lines, requester, required_by, priority="Normal", reason="",
+              raised_by="manager", request_ids=None):
+    """Raise a PR. lines = [{"part_id": ..., "qty": ...}, ...]. Returns the PR number."""
+    requester = _clean_name(requester, "Requester name")
+    if required_by is None:
+        raise ValueError("Required-by date is required.")
+    if priority not in PR_PRIORITIES:
+        priority = "Normal"
+    merged = {}
+    for line in lines or []:
+        pid = str(line.get("part_id") or "").strip()
+        qty = int(line.get("qty") or 0)
+        if pid and qty > 0:
+            merged[pid] = merged.get(pid, 0) + qty
+    if not merged:
+        raise ValueError("Add at least one item with a quantity above zero.")
+
+    c = conn.cursor()
+    try:
+        c.execute("SELECT * FROM parts WHERE part_id = ANY(%s)", (list(merged),))
+        parts = {r["part_id"]: r for r in c.fetchall()}
+        missing = [p for p in merged if p not in parts]
+        if missing:
+            raise ValueError(f"Item not found: {', '.join(missing)}")
+
+        # Serialise numbering so two PRs raised at the same moment never share a number.
+        c.execute("SELECT pg_advisory_xact_lock(72011)")
+        c.execute(
+            """
+            SELECT COUNT(*) AS n FROM purchase_requisitions
+            WHERE date_part('year', created_at AT TIME ZONE 'Asia/Kolkata')
+                = date_part('year', NOW() AT TIME ZONE 'Asia/Kolkata')
+            """
+        )
+        seq = c.fetchone()["n"] + 1
+        c.execute("SELECT to_char(NOW() AT TIME ZONE 'Asia/Kolkata', 'YYYY') AS y")
+        pr_no = f"PR-{c.fetchone()['y']}-{seq:04d}"
+
+        c.execute(
+            """
+            INSERT INTO purchase_requisitions (pr_no, status, priority, requester, reason, required_by, raised_by)
+            VALUES (%s, 'raised', %s, %s, %s, %s, %s) RETURNING id
+            """,
+            (pr_no, priority, requester, str(reason or "").strip(), required_by, raised_by),
+        )
+        pr_id = c.fetchone()["id"]
+        summary = []
+        for pid, qty in merged.items():
+            p = parts[pid]
+            c.execute(
+                """
+                INSERT INTO pr_lines (pr_id, part_id, part_name, unit, qty_requested,
+                                      stock_at_request, min_level_at_request)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (pr_id, pid, p["name"], p["unit"], qty, int(p["quantity"] or 0), int(p["min_level"] or 0)),
+            )
+            summary.append(f"{p['name']} × {qty}")
+        _pr_event(
+            c, pr_id, "raised", requester,
+            f"Raised ({priority}), required by {required_by:%d-%b-%Y}. Items: " + "; ".join(summary)
+            + (f". Reason: {reason.strip()}" if str(reason or "").strip() else ""),
+        )
+        if request_ids:
+            c.execute(
+                """
+                UPDATE stock_requests SET status = 'converted', pr_id = %s, handled_by = %s,
+                       handled_at = NOW(), handle_note = %s
+                WHERE id = ANY(%s) AND status = 'open'
+                RETURNING requested_by, part_name, qty
+                """,
+                (pr_id, raised_by, f"Converted to {pr_no}", list(request_ids)),
+            )
+            for r in c.fetchall():
+                _pr_event(c, pr_id, "note", requester,
+                          f"Includes request from {r['requested_by']}: {r['part_name']} × {r['qty']}")
+        conn.commit()
+        return pr_no
+    except Exception:
+        conn.rollback()
+        raise
+
+
+@transactional
+def mark_pr_ordered(conn, pr_id, ordered_by, expected_date, vendor_name="", po_ref="", rates=None, note=""):
+    ordered_by = _clean_name(ordered_by, "Ordered-by name")
+    if expected_date is None:
+        raise ValueError("Expected delivery date is required.")
+    c = conn.cursor()
+    try:
+        pr = _lock_pr(c, pr_id)
+        if pr["status"] != "raised":
+            raise ValueError(f"{pr['pr_no']} is already {PR_STATUS_LABELS.get(pr['status'], pr['status'])}.")
+        vid, vname = _vendor_id(c, vendor_name)
+        c.execute(
+            """
+            UPDATE purchase_requisitions
+            SET status = 'ordered', vendor_id = %s, vendor_name = %s, po_ref = %s, ordered_by = %s,
+                ordered_at = NOW(), expected_date = %s, updated_at = NOW()
+            WHERE id = %s
+            """,
+            (vid, vname, str(po_ref or "").strip(), ordered_by, expected_date, pr_id),
+        )
+        for line_id, rate in (rates or {}).items():
+            if rate not in (None, "") and float(rate) > 0:
+                c.execute("UPDATE pr_lines SET rate = %s WHERE id = %s AND pr_id = %s", (float(rate), int(line_id), pr_id))
+        bits = [f"Ordered, expected {expected_date:%d-%b-%Y}"]
+        if vname:
+            bits.append(f"vendor {vname}")
+        if str(po_ref or "").strip():
+            bits.append(f"PO/ref {str(po_ref).strip()}")
+        if str(note or "").strip():
+            bits.append(str(note).strip())
+        _pr_event(c, pr_id, "ordered", ordered_by, " · ".join(bits))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
+@transactional
+def receive_pr(conn, pr_id, receipts, received_by, grn_note=""):
+    """Receive goods against a PR. receipts = {line_id: qty}. Stock goes up and Inward history is written."""
+    received_by = _clean_name(received_by, "Received-by name")
+    grn_note = str(grn_note or "").strip()
+    if not grn_note:
+        raise ValueError("GRN / challan / invoice reference is required.")
+    receipts = {int(k): int(v or 0) for k, v in (receipts or {}).items() if int(v or 0) > 0}
+    if not receipts:
+        raise ValueError("Enter the quantity received for at least one item.")
+    c = conn.cursor()
+    try:
+        pr = _lock_pr(c, pr_id)
+        if pr["status"] not in ("raised", "ordered", "partial"):
+            raise ValueError(f"{pr['pr_no']} is {PR_STATUS_LABELS.get(pr['status'], pr['status'])} — nothing to receive.")
+        c.execute("SELECT * FROM pr_lines WHERE pr_id = %s ORDER BY id FOR UPDATE", (pr_id,))
+        lines = {r["id"]: r for r in c.fetchall()}
+        summary = []
+        for line_id, qty in receipts.items():
+            line = lines.get(line_id)
+            if line is None:
+                raise ValueError("Item line not found on this PR.")
+            pending = line["qty_requested"] - line["qty_received"]
+            if qty > pending:
+                raise ValueError(
+                    f"{line['part_name']}: receiving {qty} but only {pending} pending on {pr['pr_no']}. "
+                    "Use Inward for extra quantity."
+                )
+            part = _lock_part(c, line["part_id"])
+            if part is None:
+                raise ValueError(f"Item {line['part_id']} no longer exists.")
+            before = int(part["quantity"] or 0)
+            after = before + qty
+            c.execute("UPDATE parts SET quantity = %s, updated_at = NOW() WHERE part_id = %s", (after, line["part_id"]))
+            c.execute(
+                """
+                INSERT INTO transactions (tx_type, part_id, part_name, qty, unit, performed_by, performed_role,
+                                          machine_sn, purpose, note, prev_stock, balance_stock)
+                VALUES ('deposit', %s, %s, %s, %s, %s, 'manager', '', %s, %s, %s, %s)
+                """,
+                (line["part_id"], part["name"], qty, part["unit"], received_by, f"PR receipt {pr['pr_no']}",
+                 f"{pr['pr_no']} · {grn_note}", before, after),
+            )
+            c.execute("UPDATE pr_lines SET qty_received = qty_received + %s WHERE id = %s", (qty, line_id))
+            line["qty_received"] += qty
+            summary.append(f"{line['part_name']} × {qty}")
+        all_done = all(l["qty_received"] >= l["qty_requested"] for l in lines.values())
+        new_status = "received" if all_done else "partial"
+        c.execute(
+            """
+            UPDATE purchase_requisitions SET status = %s, updated_at = NOW(),
+                received_at = CASE WHEN %s THEN NOW() ELSE received_at END,
+                closed_at = CASE WHEN %s THEN NOW() ELSE closed_at END,
+                closed_by = CASE WHEN %s THEN %s ELSE closed_by END
+            WHERE id = %s
+            """,
+            (new_status, all_done, all_done, all_done, received_by, pr_id),
+        )
+        pending_txt = "" if all_done else " · still pending: " + "; ".join(
+            f"{l['part_name']} × {l['qty_requested'] - l['qty_received']}"
+            for l in lines.values() if l["qty_received"] < l["qty_requested"]
+        )
+        _pr_event(c, pr_id, "received", received_by,
+                  f"Received {'; '.join(summary)} · GRN {grn_note}"
+                  + (" · PR complete" if all_done else pending_txt))
+        conn.commit()
+        return new_status
+    except Exception:
+        conn.rollback()
+        raise
+
+
+@transactional
+def close_pr(conn, pr_id, actor, reason, cancel=False):
+    """Cancel (nothing received yet) or close short (stop waiting for the rest)."""
+    actor = _clean_name(actor, "Your name")
+    reason = str(reason or "").strip()
+    if len(reason) < 3:
+        raise ValueError("A reason is required.")
+    c = conn.cursor()
+    try:
+        pr = _lock_pr(c, pr_id)
+        if pr["status"] not in PR_OPEN_STATUSES:
+            raise ValueError(f"{pr['pr_no']} is already {PR_STATUS_LABELS.get(pr['status'], pr['status'])}.")
+        c.execute("SELECT COALESCE(SUM(qty_received), 0) AS r FROM pr_lines WHERE pr_id = %s", (pr_id,))
+        received_any = c.fetchone()["r"] > 0
+        if cancel and received_any:
+            raise ValueError("Some goods were already received — use 'Close short' instead of cancel.")
+        status = "cancelled" if cancel else "closed_short"
+        c.execute(
+            """
+            UPDATE purchase_requisitions SET status = %s, closed_by = %s, closed_at = NOW(),
+                   close_reason = %s, updated_at = NOW()
+            WHERE id = %s
+            """,
+            (status, actor, reason, pr_id),
+        )
+        _pr_event(c, pr_id, status, actor, reason)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
+@transactional
+def update_pr_expected_date(conn, pr_id, actor, new_date, reason):
+    actor = _clean_name(actor, "Your name")
+    reason = str(reason or "").strip()
+    if len(reason) < 3:
+        raise ValueError("Give the reason for the new date (e.g. vendor said dispatch delayed).")
+    c = conn.cursor()
+    try:
+        pr = _lock_pr(c, pr_id)
+        if pr["status"] not in ("ordered", "partial"):
+            raise ValueError("Expected date can be changed only after the PR is ordered.")
+        old = pr["expected_date"]
+        c.execute("UPDATE purchase_requisitions SET expected_date = %s, updated_at = NOW() WHERE id = %s",
+                  (new_date, pr_id))
+        _pr_event(c, pr_id, "date_changed", actor,
+                  f"Expected date {old:%d-%b-%Y} → {new_date:%d-%b-%Y} · {reason}" if old else
+                  f"Expected date set to {new_date:%d-%b-%Y} · {reason}")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
+@transactional
+def add_pr_note(conn, pr_id, actor, note):
+    actor = _clean_name(actor, "Your name")
+    note = str(note or "").strip()
+    if not note:
+        raise ValueError("Write the note first.")
+    c = conn.cursor()
+    try:
+        _lock_pr(c, pr_id)
+        _pr_event(c, pr_id, "note", actor, note)
+        c.execute("UPDATE purchase_requisitions SET updated_at = NOW() WHERE id = %s", (pr_id,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def list_prs(conn, statuses=None, search="", limit=500):
+    c = conn.cursor()
+    sql = """
+        SELECT pr.*,
+               COUNT(l.id) AS line_count,
+               COALESCE(SUM(l.qty_requested), 0) AS qty_requested,
+               COALESCE(SUM(l.qty_received), 0) AS qty_received,
+               COALESCE(SUM(l.rate * l.qty_requested), 0) AS value,
+               string_agg(l.part_name || ' × ' || l.qty_requested, '; ' ORDER BY l.id) AS items,
+               (NOW() AT TIME ZONE 'Asia/Kolkata')::date - (pr.created_at AT TIME ZONE 'Asia/Kolkata')::date AS days_open
+        FROM purchase_requisitions pr
+        LEFT JOIN pr_lines l ON l.pr_id = pr.id
+        WHERE 1=1
+    """
+    params = []
+    if statuses:
+        sql += " AND pr.status = ANY(%s)"
+        params.append(list(statuses))
+    if search:
+        like = f"%{search}%"
+        sql += """ AND (pr.pr_no ILIKE %s OR pr.requester ILIKE %s OR pr.vendor_name ILIKE %s OR pr.po_ref ILIKE %s
+                   OR EXISTS (SELECT 1 FROM pr_lines x WHERE x.pr_id = pr.id
+                              AND (x.part_name ILIKE %s OR x.part_id ILIKE %s)))"""
+        params.extend([like] * 6)
+    sql += " GROUP BY pr.id ORDER BY pr.created_at DESC LIMIT %s"
+    params.append(limit)
+    c.execute(sql, params)
+    return c.fetchall()
+
+
+def get_pr_detail(conn, pr_id):
+    c = conn.cursor()
+    c.execute("SELECT * FROM purchase_requisitions WHERE id = %s", (pr_id,))
+    pr = c.fetchone()
+    if pr is None:
+        return None
+    c.execute(
+        """
+        SELECT l.*, p.quantity AS stock_now
+        FROM pr_lines l LEFT JOIN parts p ON p.part_id = l.part_id
+        WHERE l.pr_id = %s ORDER BY l.id
+        """,
+        (pr_id,),
+    )
+    lines = c.fetchall()
+    c.execute("SELECT * FROM pr_events WHERE pr_id = %s ORDER BY created_at, id", (pr_id,))
+    events = c.fetchall()
+    return {"pr": dict(pr), "lines": [dict(l) for l in lines], "events": [dict(e) for e in events]}
+
+
+def on_order_map(conn):
+    """part_id -> {"qty": pending qty, "prs": [(pr_no, due_date)]} for every open PR."""
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT l.part_id, pr.pr_no, COALESCE(pr.expected_date, pr.required_by) AS due,
+               l.qty_requested - l.qty_received AS pending
+        FROM pr_lines l JOIN purchase_requisitions pr ON pr.id = l.pr_id
+        WHERE pr.status IN ('raised', 'ordered', 'partial') AND l.qty_requested > l.qty_received
+        ORDER BY due NULLS LAST
+        """
+    )
+    result = {}
+    for r in c.fetchall():
+        entry = result.setdefault(r["part_id"], {"qty": 0, "prs": []})
+        entry["qty"] += int(r["pending"])
+        entry["prs"].append((r["pr_no"], r["due"]))
+    return result
+
+
+def item_purchase_history(conn, part_ids):
+    """Last rate, vendor and lead time per item (from received PRs)."""
+    if not part_ids:
+        return {}
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT DISTINCT ON (l.part_id) l.part_id, l.rate, pr.vendor_name, pr.pr_no,
+               (pr.received_at AT TIME ZONE 'Asia/Kolkata')::date
+                 - (pr.ordered_at AT TIME ZONE 'Asia/Kolkata')::date AS lead_days,
+               pr.ordered_at
+        FROM pr_lines l JOIN purchase_requisitions pr ON pr.id = l.pr_id
+        WHERE l.part_id = ANY(%s) AND pr.ordered_at IS NOT NULL
+        ORDER BY l.part_id, pr.ordered_at DESC
+        """,
+        (list(part_ids),),
+    )
+    return {r["part_id"]: dict(r) for r in c.fetchall()}
+
+
+def vendor_report(conn):
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT pr.vendor_name AS vendor,
+               COUNT(*) AS orders,
+               COUNT(*) FILTER (WHERE pr.status IN ('ordered', 'partial')) AS open_orders,
+               COUNT(*) FILTER (WHERE pr.received_at IS NOT NULL) AS completed,
+               COUNT(*) FILTER (WHERE pr.received_at IS NOT NULL
+                                AND (pr.received_at AT TIME ZONE 'Asia/Kolkata')::date <= pr.expected_date) AS on_time,
+               COUNT(*) FILTER (WHERE pr.status IN ('ordered', 'partial')
+                                AND pr.expected_date < (NOW() AT TIME ZONE 'Asia/Kolkata')::date) AS overdue_now,
+               ROUND(AVG((pr.received_at AT TIME ZONE 'Asia/Kolkata')::date
+                         - (pr.ordered_at AT TIME ZONE 'Asia/Kolkata')::date)
+                     FILTER (WHERE pr.received_at IS NOT NULL), 1) AS avg_lead_days,
+               MAX(pr.ordered_at) AS last_order
+        FROM purchase_requisitions pr
+        WHERE pr.ordered_at IS NOT NULL AND COALESCE(pr.vendor_name, '') <> ''
+        GROUP BY pr.vendor_name
+        ORDER BY orders DESC, vendor
+        """
+    )
+    return c.fetchall()
+
+
+def list_vendors(conn):
+    c = conn.cursor()
+    c.execute("SELECT * FROM vendors ORDER BY name")
+    return c.fetchall()
+
+
+@transactional
+def save_vendor(conn, name, phone="", email="", notes="", vendor_id=None):
+    name = " ".join(str(name or "").split())
+    if not name:
+        raise ValueError("Vendor name is required.")
+    c = conn.cursor()
+    try:
+        if vendor_id:
+            c.execute("UPDATE vendors SET name = %s, phone = %s, email = %s, notes = %s WHERE id = %s",
+                      (name, phone, email, notes, vendor_id))
+        else:
+            c.execute(
+                """
+                INSERT INTO vendors (name, phone, email, notes) VALUES (%s, %s, %s, %s)
+                ON CONFLICT (name) DO UPDATE SET phone = EXCLUDED.phone, email = EXCLUDED.email, notes = EXCLUDED.notes
+                """,
+                (name, phone, email, notes),
+            )
+        conn.commit()
+    except psycopg2.IntegrityError:
+        conn.rollback()
+        raise ValueError("A vendor with that name already exists.") from None
+    except Exception:
+        conn.rollback()
+        raise
+
+
+# ── Operator stock requests ────────────────────────────────────────────────
+@transactional
+def create_stock_request(conn, part_id, qty, requested_by, reason=""):
+    requested_by = _clean_name(requested_by, "Your name")
+    qty = int(qty or 0)
+    if qty <= 0:
+        raise ValueError("Quantity must be at least 1.")
+    c = conn.cursor()
+    try:
+        part = get_part(conn, part_id)
+        if part is None:
+            raise ValueError("Item not found.")
+        c.execute(
+            """
+            SELECT requested_by, created_at FROM stock_requests
+            WHERE part_id = %s AND status = 'open' ORDER BY created_at LIMIT 1
+            """,
+            (part_id,),
+        )
+        already = c.fetchone()
+        if already:
+            when = already["created_at"].astimezone(ZoneInfo(APP_TIMEZONE)).strftime("%d-%b %H:%M")
+            raise ValueError(f"Already requested by {already['requested_by']} on {when} — the manager has it.")
+        c.execute(
+            """
+            INSERT INTO stock_requests (part_id, part_name, unit, qty, requested_by, reason, stock_at_request)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (part_id, part["name"], part["unit"], qty, requested_by, str(reason or "").strip(),
+             int(part["quantity"] or 0)),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def list_stock_requests(conn, status="open"):
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT r.*, p.quantity AS stock_now, p.reorder_qty
+        FROM stock_requests r LEFT JOIN parts p ON p.part_id = r.part_id
+        WHERE r.status = %s ORDER BY r.created_at
+        """,
+        (status,),
+    )
+    return c.fetchall()
+
+
+@transactional
+def dismiss_stock_request(conn, request_id, actor, note):
+    actor = _clean_name(actor, "Your name")
+    if len(str(note or "").strip()) < 3:
+        raise ValueError("Give a reason for dismissing the request.")
+    c = conn.cursor()
+    c.execute(
+        """
+        UPDATE stock_requests SET status = 'dismissed', handled_by = %s, handled_at = NOW(), handle_note = %s
+        WHERE id = %s AND status = 'open'
+        """,
+        (actor, str(note).strip(), request_id),
+    )
+    conn.commit()

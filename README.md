@@ -26,6 +26,20 @@ streamlit run app.py
 - **Manager** - unlocked with `MANAGER_PASSWORD`; adds inward, returnables,
   item master, dashboard.
 
+## Purchase requisitions (Manager → Purchase tab)
+
+- **New PR**: add items (or all low-stock items in one click), set quantities, requester name,
+  required-by date and priority. Warns if an item is already on an open PR.
+- **Open PRs**: overdue PRs float to the top. Open one to mark it ordered (vendor, PO no.,
+  rates and expected date are optional except the date), receive goods (partial deliveries stay
+  pending), change the expected date with a reason, add notes, close short or cancel.
+- **Receiving** adds stock automatically and writes an Inward line in History linked to the PR.
+- **Proof**: every action is saved with the person's name and the database server's time in a log
+  that cannot be edited or deleted. Print the PR sheet from the PR window.
+- **Requests**: operators can ask for out-of-stock / low items from Pick or Items; managers turn
+  them into a PR or dismiss them with a reason.
+- **Register** (Excel export) and **Vendors** (on-time %, average lead days).
+
 ## Notes
 
 - `items_master_live.csv` is only used once, to fill an empty database the very
