@@ -38,7 +38,12 @@ streamlit run app.py
   that cannot be edited or deleted. Print the PR sheet from the PR window.
 - **Requests**: operators can ask for out-of-stock / low items from Pick or Items; managers turn
   them into a PR or dismiss them with a reason.
+- **Pending items**: every item still awaited across all open PRs, overdue first, with vendor,
+  PO, due date and days open. Filter, export to Excel, or share on WhatsApp.
 - **Register** (Excel export) and **Vendors** (on-time %, average lead days).
+- **Share on WhatsApp**: from a PR, the pending list or Alerts. It opens WhatsApp with the message
+  ready; pick your group and send. (WhatsApp's official API cannot post into an existing group,
+  so this uses WhatsApp's own share link — free, no setup.)
 
 ## Notes
 

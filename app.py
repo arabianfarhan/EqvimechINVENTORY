@@ -1,6 +1,7 @@
 import os
 import hmac
 import html
+import urllib.parse
 import subprocess
 import threading
 import datetime as dt
@@ -49,6 +50,7 @@ from db import (
     get_pr_detail,
     item_purchase_history,
     list_prs,
+    list_pending_pr_lines,
     list_stock_requests,
     list_vendors,
     mark_pr_ordered,
@@ -2480,6 +2482,8 @@ def alerts_page(conn):
         ]
     )
     st.dataframe(df, width="stretch", hide_index=True, height=min(600, 38 + 35 * len(df)))
+    if st.session_state.get("role") == "manager":
+        share_on_whatsapp(lowstock_whatsapp_text(alerts, oo), key="alerts_wa", label="🟢  Share low-stock list on WhatsApp")
     st.download_button(
         "⬇ Download reorder list",
         df.to_csv(index=False).encode("utf-8-sig"),
@@ -2491,7 +2495,94 @@ def alerts_page(conn):
 
 # ── Purchase requisitions (PR) ──────────────────────────────────────────────
 PR_NAV = "🧾 Purchase"
-PR_VIEWS = ["Open PRs", "New PR", "Requests", "Register", "Vendors"]
+PR_VIEWS = ["Open PRs", "Pending items", "New PR", "Requests", "Register", "Vendors"]
+WA_MAX_LINES = 25
+
+
+# ── WhatsApp sharing ───────────────────────────────────────────────────────
+# WhatsApp's official API cannot post into an existing group (group messaging
+# is limited to Official Business Accounts and new 8-person groups), so we use
+# WhatsApp's own share link: it opens WhatsApp with the message typed in and
+# the user taps the group. Works on phones, WhatsApp Desktop and WhatsApp Web.
+def whatsapp_url(text):
+    return "https://wa.me/?text=" + urllib.parse.quote(text[:3500])
+
+
+def share_on_whatsapp(text, key, label="🟢  Share on WhatsApp", stretch=True):
+    st.link_button(label, whatsapp_url(text), type="secondary", width="stretch" if stretch else "content",
+                   help="Opens WhatsApp with this message ready — pick your group and send.")
+
+
+def _wa_lines(items, fmt):
+    out = [fmt(i) for i in items[:WA_MAX_LINES]]
+    if len(items) > WA_MAX_LINES:
+        out.append(f"…and {len(items) - WA_MAX_LINES} more (see the app)")
+    return out
+
+
+def pr_whatsapp_text(detail):
+    pr, lines, events = detail["pr"], detail["lines"], detail["events"]
+    status = PR_STATUS_LABELS.get(pr["status"], pr["status"])
+    head = [f"*{pr['pr_no']}* — {status}"]
+    if pr.get("priority") and pr["priority"] != "Normal":
+        head[0] += f" — *{pr['priority'].upper()}*"
+    head.append(f"Requested by: {pr['requester']} on {fmt_ist(pr['created_at'])}")
+    head.append(f"Required by: {fmt_date(pr['required_by'])}")
+    if pr.get("ordered_at"):
+        vend = f" from {pr['vendor_name']}" if pr.get("vendor_name") else ""
+        po = f" (PO {pr['po_ref']})" if pr.get("po_ref") else ""
+        head.append(f"Ordered{vend}{po} on {fmt_ist(pr['ordered_at'])} by {pr.get('ordered_by') or '-'}")
+        head.append(f"Expected: {fmt_date(pr.get('expected_date'))}")
+    late = pr_overdue_days(pr)
+    if late:
+        head.append(f"⚠ *OVERDUE by {late} day(s)*")
+    if pr.get("reason"):
+        head.append(f"Reason: {pr['reason']}")
+
+    def fmt_line(l):
+        pending = l["qty_requested"] - l["qty_received"]
+        if l["qty_received"] and pending:
+            return f"• {l['part_name']} — {l['qty_requested']} {l['unit']} (received {l['qty_received']}, *pending {pending}*)"
+        if not pending:
+            return f"• {l['part_name']} — {l['qty_requested']} {l['unit']} ✓ received"
+        return f"• {l['part_name']} — {l['qty_requested']} {l['unit']}"
+
+    body = ["", "*Items*"] + _wa_lines(lines, fmt_line)
+    last = events[-1] if events else None
+    tail = []
+    if last:
+        tail = ["", f"Last update: {EVENT_LABELS.get(last['event'], last['event']).split(' ', 1)[-1]} by "
+                    f"{last['actor']}, {fmt_ist(last['created_at'])}"]
+    return "\n".join(head + body + tail + ["", "_Eqvimech Inventory_"])
+
+
+def pending_whatsapp_text(rows):
+    today = _today_date()
+    late = [r for r in rows if (r.get("days_late") or 0) > 0]
+    head = [f"*Pending purchase items — {today:%d-%b-%Y}*",
+            f"{len(rows)} item(s) awaited on {len({r['pr_no'] for r in rows})} PR(s)"
+            + (f" · *{len(late)} overdue*" if late else "")]
+
+    def fmt_row(r):
+        due = r.get("expected_date") or r.get("required_by")
+        tag = f" ⚠ *{r['days_late']}d late*" if (r.get("days_late") or 0) > 0 else (f" (due {due:%d-%b})" if due else "")
+        vend = f" · {r['vendor_name']}" if r.get("vendor_name") else (" · not ordered yet" if r["status"] == "raised" else "")
+        return f"• {r['part_name']} — {r['pending']} {r['unit']} · {r['pr_no']}{vend}{tag}"
+
+    ordered = sorted(rows, key=lambda r: -(r.get("days_late") or -999))
+    return "\n".join(head + [""] + _wa_lines(ordered, fmt_row) + ["", "_Eqvimech Inventory_"])
+
+
+def lowstock_whatsapp_text(alerts, oo):
+    today = _today_date()
+    head = [f"*Low stock — {today:%d-%b-%Y}*", f"{len(alerts)} item(s) at or below minimum"]
+
+    def fmt_p(p):
+        order = f" · 🚚 {oo[p['part_id']]['qty']} on order" if p["part_id"] in oo else " · *not ordered*"
+        return f"• {p['name']} — {int(p.get('quantity') or 0)} {p.get('unit') or 'Nos'} (min {int(p.get('min_level') or 0)}){order}"
+
+    return "\n".join(head + [""] + _wa_lines(alerts, fmt_p) + ["", "_Eqvimech Inventory_"])
+
 PRIORITY_MARK = {"Normal": "", "Urgent": "🟠 Urgent", "Breakdown": "🔴 Breakdown"}
 
 
@@ -2507,6 +2598,11 @@ def on_order(conn):
 @st.cache_data(ttl=300, show_spinner=False, max_entries=40)
 def _cached_prs(_conn, version, statuses, search, today):
     return [dict(r) for r in list_prs(_conn, statuses=list(statuses) if statuses else None, search=search)]
+
+
+@st.cache_data(ttl=300, show_spinner=False, max_entries=8)
+def _cached_pending_lines(_conn, version, today):
+    return [dict(r) for r in list_pending_pr_lines(_conn)]
 
 
 @st.cache_data(ttl=300, show_spinner=False, max_entries=4)
@@ -2758,6 +2854,9 @@ def _pr_new_view(conn):
         for r in chosen_requests:
             st.session_state.pop(f"pr_req_{r['id']}", None)
         st.session_state["pr_notice"] = f"✅ {pr_no} raised. Mark it Ordered once the order is placed."
+        found = list_prs(conn, search=pr_no, limit=1)
+        if found:
+            st.session_state["pr_share_id"] = found[0]["id"]
         st.session_state["pr_view_next"] = "Open PRs"
         st.rerun()
 
@@ -2978,6 +3077,7 @@ def _pr_dialog_body(conn):
         st.session_state.pop(f"pr_action_{pr_id}", None)
         st.session_state.pop("pr_dialog_id", None)
         st.session_state["pr_notice"] = f"✅ {pr['pr_no']}: {done_msg}"
+        st.session_state["pr_share_id"] = pr_id
         st.rerun()
 
     st.markdown("**Record of actions** — permanent, cannot be edited")
@@ -2990,7 +3090,9 @@ def _pr_dialog_body(conn):
             unsafe_allow_html=True,
         )
 
-    c1, c2 = st.columns(2)
+    c0, c1, c2 = st.columns(3)
+    with c0:
+        share_on_whatsapp(pr_whatsapp_text(detail), key=f"pr_wa_{pr_id}")
     c1.download_button(
         "🖨  Print PR sheet",
         pr_print_html(detail).encode("utf-8"),
@@ -3042,6 +3144,70 @@ def _pr_open_view(conn):
         if st.button(_pr_card(pr, today), key=f"pr_open_{pr['id']}", width="stretch", type="secondary"):
             st.session_state["pr_dialog_id"] = pr["id"]
             st.rerun()
+
+
+# ── Pending items (delivery tracker) ───────────────────────────────────────
+def _pr_pending_view(conn):
+    rows = _cached_pending_lines(conn, data_version(), _today_ist())
+    if not rows:
+        st.success("Nothing pending — every PR item has been received.")
+        return
+    late = [r for r in rows if (r.get("days_late") or 0) > 0]
+    not_ordered = [r for r in rows if r["status"] == "raised"]
+    st.caption(
+        f"{len(rows)} item(s) still awaited · {len(late)} overdue · {len(not_ordered)} not ordered yet. "
+        "Overdue first. Click a row to open its PR."
+    )
+    c1, c2 = st.columns([0.4, 0.6])
+    show = c1.selectbox("Show", ["All pending", "Overdue only", "Not ordered yet", "Ordered — awaiting delivery"],
+                        key="pr_pending_filter", label_visibility="collapsed")
+    with c2:
+        q = (live_search_input("Search pending", "Item, PR no, vendor…", "pr_pending_search") or "").strip().lower()
+    if show == "Overdue only":
+        rows = late
+    elif show == "Not ordered yet":
+        rows = not_ordered
+    elif show == "Ordered — awaiting delivery":
+        rows = [r for r in rows if r["status"] in ("ordered", "partial")]
+    if q:
+        rows = [r for r in rows if any(q in str(r.get(f) or "").lower()
+                                       for f in ("part_name", "part_id", "pr_no", "vendor_name", "requester", "po_ref"))]
+    rows = sorted(rows, key=lambda r: -(r.get("days_late") if r.get("days_late") is not None else -9999))
+    if not rows:
+        st.info("Nothing matches.")
+        return
+    df = pd.DataFrame([
+        {
+            "Late": f"⚠ {r['days_late']}d" if (r.get("days_late") or 0) > 0 else "",
+            "Item": r["part_name"], "Pending": r["pending"], "Unit": r["unit"],
+            "Received": r["qty_received"], "Ordered qty": r["qty_requested"],
+            "PR no": r["pr_no"], "Status": PR_STATUS_LABELS.get(r["status"], r["status"]),
+            "Due": fmt_date(r.get("expected_date") or r.get("required_by")),
+            "Vendor": r.get("vendor_name") or "", "PO / ref": r.get("po_ref") or "",
+            "Ordered on": fmt_ist(r.get("ordered_at")), "Requested by": r["requester"],
+            "Days open": r["days_open"], "Stock now": r.get("stock_now"),
+            "_id": r["pr_id"],
+        }
+        for r in rows
+    ])
+    sel = st.dataframe(
+        df.drop(columns=["_id"]), hide_index=True, width="stretch", height=min(480, 38 + 35 * len(df)),
+        on_select="rerun", selection_mode="single-row", key="pr_pending_table",
+    )
+    picked = (sel.selection.rows if sel else []) or []
+    if picked:
+        st.session_state["pr_dialog_id"] = int(df.iloc[picked[0]]["_id"])
+        st.session_state.pop("pr_pending_table", None)
+        st.rerun()
+    b1, b2 = st.columns(2)
+    with b1:
+        share_on_whatsapp(pending_whatsapp_text(rows), key="pr_pending_wa", label="🟢  Share this list on WhatsApp")
+    b2.download_button(
+        "⬇ Export pending list (Excel CSV)",
+        df.drop(columns=["_id"]).to_csv(index=False).encode("utf-8-sig"),
+        file_name=f"pending_purchase_items_{_today_ist()}.csv",
+        mime="text/csv", key="pr_pending_export", width="stretch",
+    )
 
 
 # ── Requests from the floor ────────────────────────────────────────────────
@@ -3185,8 +3351,15 @@ def purchase_page(conn):
     _section_title("Purchase requisitions", "Raise, order and receive — every step is stamped with name, date and time.")
 
     notice = st.session_state.pop("pr_notice", None)
+    share_id = st.session_state.pop("pr_share_id", None)
     if notice:
-        st.success(notice)
+        n1, n2 = st.columns([0.7, 0.3], vertical_alignment="center")
+        n1.success(notice)
+        detail = get_pr_detail(conn, share_id) if share_id else None
+        if detail:
+            with n2:
+                share_on_whatsapp(pr_whatsapp_text(detail), key=f"pr_wa_notice_{share_id}",
+                                  label="🟢  Tell the group on WhatsApp")
 
     awaiting = sum(1 for p in open_prs if p["status"] == "raised")
     st.markdown(
@@ -3204,8 +3377,10 @@ def purchase_page(conn):
     nxt = st.session_state.pop("pr_view_next", None)
     if nxt:
         st.session_state["pr_view"] = nxt
+    pending_count = len(_cached_pending_lines(conn, data_version(), _today_ist()))
     labels = {
         "Open PRs": f"Open PRs ({len(open_prs)})",
+        "Pending items": f"Pending items ({pending_count})" if pending_count else "Pending items",
         "New PR": "➕ New PR",
         "Requests": f"Requests ({len(reqs)})" if reqs else "Requests",
         "Register": "Register",
@@ -3219,6 +3394,8 @@ def purchase_page(conn):
 
     if view == "New PR":
         _pr_new_view(conn)
+    elif view == "Pending items":
+        _pr_pending_view(conn)
     elif view == "Requests":
         _pr_requests_view(conn)
     elif view == "Register":

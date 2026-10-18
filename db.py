@@ -2211,3 +2211,27 @@ def dismiss_stock_request(conn, request_id, actor, note):
         (actor, str(note).strip(), request_id),
     )
     conn.commit()
+
+
+def list_pending_pr_lines(conn):
+    """Every item still awaited on an open PR, with the dates needed to chase it."""
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT pr.id AS pr_id, pr.pr_no, pr.status, pr.priority, pr.requester, pr.created_at,
+               pr.required_by, pr.expected_date, pr.ordered_at, pr.vendor_name, pr.po_ref,
+               l.part_id, l.part_name, l.unit, l.qty_requested, l.qty_received,
+               l.qty_requested - l.qty_received AS pending,
+               p.quantity AS stock_now,
+               (NOW() AT TIME ZONE 'Asia/Kolkata')::date
+                 - COALESCE(pr.expected_date, pr.required_by) AS days_late,
+               (NOW() AT TIME ZONE 'Asia/Kolkata')::date
+                 - (pr.created_at AT TIME ZONE 'Asia/Kolkata')::date AS days_open
+        FROM pr_lines l
+        JOIN purchase_requisitions pr ON pr.id = l.pr_id
+        LEFT JOIN parts p ON p.part_id = l.part_id
+        WHERE pr.status IN ('raised', 'ordered', 'partial') AND l.qty_requested > l.qty_received
+        ORDER BY COALESCE(pr.expected_date, pr.required_by) NULLS LAST, pr.pr_no, l.id
+        """
+    )
+    return c.fetchall()
