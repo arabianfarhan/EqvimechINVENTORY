@@ -2063,7 +2063,7 @@ def get_pr_detail(conn, pr_id):
         return None
     c.execute(
         """
-        SELECT l.*, p.quantity AS stock_now
+        SELECT l.*, p.quantity AS stock_now, COALESCE(p.description, '') AS description
         FROM pr_lines l LEFT JOIN parts p ON p.part_id = l.part_id
         WHERE l.pr_id = %s ORDER BY l.id
         """,

@@ -3330,7 +3330,10 @@ def pr_print_html(detail):
     has_rate = any(l.get("rate") is not None for l in lines)
     rows = "".join(
         f"<tr><td>{i}</td><td>{esc(l['part_id'])}</td><td>{esc(l['part_name'])}</td>"
-        f"<td class=n>{l['qty_requested']}</td><td>{esc(l['unit'])}</td><td class=n>{l['qty_received']}</td>"
+        f"<td class=desc>{esc(l.get('description') or '')}</td>"
+        f"<td class=n><b>{l['qty_requested']}</b></td><td>{esc(l['unit'])}</td>"
+        f"<td class=n>{'' if l.get('stock_now') is None else int(l['stock_now'])}</td>"
+        f"<td class=n>{l['qty_received']}</td>"
         f"<td class=n>{l['qty_requested'] - l['qty_received']}</td>"
         + (f"<td class=n>{'' if l.get('rate') is None else f'{float(l['rate']):,.2f}'}</td>" if has_rate else "")
         + "</tr>"
@@ -3349,7 +3352,7 @@ def pr_print_html(detail):
  h1{{font-size:20px;margin:0}} .sub{{margin:2px 0 14px 0}}
  table{{border-collapse:collapse;width:100%;margin:8px 0 16px 0}}
  th,td{{border:1px solid #000;padding:5px 6px;text-align:left;vertical-align:top}}
- th{{background:#e5e5e5}} td.n{{text-align:right}}
+ th{{background:#e5e5e5}} td.n{{text-align:right;white-space:nowrap}} td.desc{{font-size:11px}}
  .grid td{{border:1px solid #000;width:25%}} .lbl{{font-weight:bold}}
  .sign{{display:flex;gap:24px;margin-top:40px}} .sign div{{flex:1;border-top:1px solid #000;padding-top:4px;text-align:center}}
  @media print{{body{{margin:10mm}}}}
@@ -3364,7 +3367,7 @@ def pr_print_html(detail):
 <tr><td class=lbl>Ordered on</td><td>{fmt_ist(pr.get('ordered_at')) or '-'}</td><td class=lbl>Expected</td><td>{fmt_date(pr.get('expected_date')) or '-'}</td></tr>
 <tr><td class=lbl>Reason</td><td colspan=3>{esc(pr.get('reason') or '-')}</td></tr>
 </table>
-<table><tr><th>#</th><th>Code</th><th>Item</th><th>Qty</th><th>Unit</th><th>Received</th><th>Pending</th>{rate_head}</tr>{rows}</table>
+<table><tr><th>#</th><th>Item code</th><th>Name</th><th>Description</th><th>Order qty</th><th>Unit</th><th>Stock now</th><th>Received</th><th>Pending</th>{rate_head}</tr>{rows}</table>
 <b>Action history</b>
 <table><tr><th style="width:20%">Date &amp; time</th><th style="width:14%">Action</th><th style="width:18%">By</th><th>Remarks</th></tr>{trail}</table>
 <div class="sign"><div>Requested by</div><div>Store / Purchase</div><div>Received by</div></div>
