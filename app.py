@@ -15,6 +15,7 @@ from st_keyup import st_keyup
 
 from search import row_matches, search_parts
 from duplicates import find_duplicate_groups, is_possible_duplicate
+from pr_pdf import build_pr_pdf
 from db import (
     APP_TIMEZONE,
     SCHEMA_VERSION,
@@ -3325,6 +3326,23 @@ def _short_event(e, pr):
     return d if len(d) <= 70 else d[:67] + "…"
 
 
+def pr_pdf_bytes(detail):
+    pr = dict(detail["pr"])
+    pr["_raised"] = fmt_ist(pr.get("created_at"))
+    pr["_required"] = fmt_date(pr.get("required_by"))
+    pr["_ordered"] = fmt_ist(pr.get("ordered_at"))
+    pr["_expected"] = fmt_date(pr.get("expected_date"))
+    actions = [
+        (fmt_ist(e["created_at"]), EVENT_LABELS.get(e["event"], e["event"]).split(" ", 1)[-1], e["actor"],
+         _short_event(e, pr))
+        for e in detail["events"]
+        if not (e["event"] == "note" and str(e.get("detail") or "").startswith("Includes request from"))
+    ]
+    printed = dt.datetime.now(tz=ZoneInfo(APP_TIMEZONE)).strftime("%d-%b-%Y %H:%M IST")
+    return build_pr_pdf(pr, detail["lines"], actions, printed,
+                        PR_STATUS_LABELS.get(pr["status"], pr["status"]), "Taloja MIDC, Navi Mumbai")
+
+
 def pr_print_html(detail):
     pr, lines, events = detail["pr"], detail["lines"], detail["events"]
     has_rate = any(l.get("rate") is not None for l in lines)
@@ -3553,13 +3571,13 @@ def _pr_dialog_body(conn):
     with c0:
         share_on_whatsapp(pr_whatsapp_text(detail), key=f"pr_wa_{pr_id}")
     c1.download_button(
-        "🖨  Print PR sheet",
-        pr_print_html(detail).encode("utf-8"),
-        file_name=f"{pr['pr_no']}.html",
-        mime="text/html",
+        "🖨  Download PR (PDF)",
+        pr_pdf_bytes(detail),
+        file_name=f"{pr['pr_no']}.pdf",
+        mime="application/pdf",
         key=f"pr_print_{pr_id}",
         width="stretch",
-        help="Downloads a print-ready page (black & white). Open it and it prints.",
+        help="A4 PDF, black & white — ready to print, email or WhatsApp.",
     )
     if c2.button("Close", key=f"pr_close_dialog_{pr_id}", type="secondary", width="stretch"):
         st.session_state.pop("pr_dialog_id", None)
