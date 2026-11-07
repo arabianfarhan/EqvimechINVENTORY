@@ -21,7 +21,7 @@ from psycopg2.extensions import TRANSACTION_STATUS_IDLE
 
 # Bump this whenever init_db() creates or changes tables. The app re-runs
 # schema setup when it changes, even if the server process was not restarted.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 ITEMS_SNAPSHOT_CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "items_master_live.csv")
 APP_TIMEZONE = "Asia/Kolkata"
@@ -325,6 +325,10 @@ def ensure_columns(conn):
             "active": "INTEGER DEFAULT 1",
             "created_at": "TIMESTAMPTZ",
             "updated_at": "TIMESTAMPTZ",
+            # pricing (visible to the Accounts login only)
+            "rate": "NUMERIC(14, 2)",
+            "rate_updated_at": "TIMESTAMPTZ",
+            "rate_updated_by": "TEXT DEFAULT ''",
         },
     )
     ensure_table_columns(
@@ -756,6 +760,9 @@ BEGIN
                     UPDATE pr_lines SET part_id = e->>'part_id' WHERE part_id = old_code;
                     UPDATE stock_requests SET part_id = e->>'part_id' WHERE part_id = old_code;
                 END IF;
+                IF to_regclass('price_changes') IS NOT NULL THEN
+                    UPDATE price_changes SET part_id = e->>'part_id' WHERE part_id = old_code;
+                END IF;
             END IF;
             IF new_qty IS DISTINCT FROM cur.quantity THEN
                 n_adjusted := n_adjusted + 1;
@@ -963,7 +970,7 @@ def wipe_all_data(conn):
     # TRUNCATE bypasses the "PR history is permanent" row trigger on purpose:
     # this is the explicit, code-protected full wipe.
     c.execute("TRUNCATE stock_requests, pr_events, pr_lines, purchase_requisitions, vendors, item_merges, "
-              "duplicate_dismissed RESTART IDENTITY")
+              "duplicate_dismissed, price_changes RESTART IDENTITY")
     c.execute("DELETE FROM transactions")
     c.execute("DELETE FROM parts")
     conn.commit()
@@ -1697,6 +1704,17 @@ CREATE TABLE IF NOT EXISTS duplicate_dismissed (
     created_at TIMESTAMPTZ DEFAULT NOW(),
     PRIMARY KEY (part_a, part_b)
 );
+CREATE TABLE IF NOT EXISTS price_changes (
+    id SERIAL PRIMARY KEY,
+    part_id TEXT NOT NULL,
+    part_name TEXT DEFAULT '',
+    old_rate NUMERIC(14, 2),
+    new_rate NUMERIC(14, 2),
+    changed_by TEXT NOT NULL,
+    note TEXT DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_price_changes_part ON price_changes(part_id);
 CREATE INDEX IF NOT EXISTS idx_pr_lines_pr ON pr_lines(pr_id);
 CREATE INDEX IF NOT EXISTS idx_pr_lines_part ON pr_lines(part_id);
 CREATE INDEX IF NOT EXISTS idx_pr_events_pr ON pr_events(pr_id);
@@ -2305,6 +2323,7 @@ def merge_parts(conn, keep_part_id, remove_part_ids, final_qty, actor, note=""):
             moved = c.rowcount
             c.execute("UPDATE pr_lines SET part_id = %s WHERE part_id = %s", (keep_part_id, pid))
             c.execute("UPDATE stock_requests SET part_id = %s WHERE part_id = %s", (keep_part_id, pid))
+            c.execute("UPDATE price_changes SET part_id = %s WHERE part_id = %s", (keep_part_id, pid))
             c.execute(
                 f"""
                 UPDATE parts SET active = 0, quantity = 0, updated_at = NOW(),
@@ -2346,6 +2365,13 @@ def merge_parts(conn, keep_part_id, remove_part_ids, final_qty, actor, note=""):
             """,
             (final_qty, location, min_level, reorder, keep_part_id),
         )
+        if keep.get("rate") is None:
+            donor = next((rows[p] for p in remove_part_ids if rows[p].get("rate") is not None), None)
+            if donor is not None:
+                c.execute(
+                    "UPDATE parts SET rate = %s, rate_updated_at = NOW(), rate_updated_by = %s WHERE part_id = %s",
+                    (donor["rate"], actor, keep_part_id),
+                )
         c.execute(
             """
             INSERT INTO transactions (tx_type, part_id, part_name, qty, unit, performed_by, performed_role,
@@ -2384,3 +2410,64 @@ def list_item_merges(conn, limit=200):
     c = conn.cursor()
     c.execute("SELECT * FROM item_merges ORDER BY created_at DESC LIMIT %s", (limit,))
     return c.fetchall()
+
+
+
+# ── Item pricing (Accounts) ────────────────────────────────────────────────
+@transactional
+def set_item_rate(conn, part_id, new_rate, actor, note=""):
+    """Set an item's unit price. Every change is logged in price_changes."""
+    actor = _clean_name(actor, "Your name")
+    if new_rate in (None, ""):
+        raise ValueError("Enter a price.")
+    new_rate = round(float(new_rate), 2)
+    if new_rate < 0:
+        raise ValueError("Price cannot be negative.")
+    c = conn.cursor()
+    try:
+        part = _lock_part(c, part_id)
+        if part is None:
+            raise ValueError("Item not found.")
+        old = None if part.get("rate") is None else float(part["rate"])
+        if old is not None and abs(old - new_rate) < 0.005:
+            conn.rollback()
+            return False
+        c.execute(
+            "UPDATE parts SET rate = %s, rate_updated_at = NOW(), rate_updated_by = %s WHERE part_id = %s",
+            (new_rate, actor, part_id),
+        )
+        c.execute(
+            """
+            INSERT INTO price_changes (part_id, part_name, old_rate, new_rate, changed_by, note)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (part_id, part["name"], old, new_rate, actor, str(note or "").strip()),
+        )
+        conn.commit()
+        return True
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def list_price_changes(conn, part_id=None, limit=300):
+    c = conn.cursor()
+    if part_id:
+        c.execute("SELECT * FROM price_changes WHERE part_id = %s ORDER BY created_at DESC LIMIT %s", (part_id, limit))
+    else:
+        c.execute("SELECT * FROM price_changes ORDER BY created_at DESC LIMIT %s", (limit,))
+    return c.fetchall()
+
+
+def last_purchase_rates(conn):
+    """part_id -> (rate, pr_no, vendor) from the most recent PR that recorded a rate."""
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT DISTINCT ON (l.part_id) l.part_id, l.rate, pr.pr_no, pr.vendor_name
+        FROM pr_lines l JOIN purchase_requisitions pr ON pr.id = l.pr_id
+        WHERE l.rate IS NOT NULL
+        ORDER BY l.part_id, pr.ordered_at DESC NULLS LAST, l.id DESC
+        """
+    )
+    return {r["part_id"]: (float(r["rate"]), r["pr_no"], r["vendor_name"]) for r in c.fetchall()}

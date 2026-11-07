@@ -44,6 +44,9 @@ from db import (
     ITEMS_SNAPSHOT_CSV_PATH,
     normalize_category,
     wipe_all_data,
+    last_purchase_rates,
+    list_price_changes,
+    set_item_rate,
     dismiss_duplicate,
     list_dismissed_duplicates,
     list_item_merges,
@@ -85,6 +88,7 @@ PICK_USER_OPTIONS = ["Ravi", "Shani", "Suraj", "Mangesh", "Ram", "Sonu", "Sandip
 # Old default codes. They are in a public GitHub repo, so they must be
 # replaced via Streamlit secrets (MANAGER_PASSWORD / RESET_CODE).
 _LEGACY_MANAGER_PASSWORD = "321"
+_LEGACY_ACCOUNTS_PASSWORD = "0909"
 
 
 def _secret(name, default=None):
@@ -99,6 +103,15 @@ def _secret(name, default=None):
 
 def manager_password_is_default():
     return _secret("MANAGER_PASSWORD") is None
+
+
+def accounts_password_is_default():
+    return _secret("ACCOUNTS_PASSWORD") is None
+
+
+def check_accounts_password(password):
+    expected = _secret("ACCOUNTS_PASSWORD", _LEGACY_ACCOUNTS_PASSWORD)
+    return hmac.compare_digest(str(password or ""), expected)
 
 
 def check_manager_password(password):
@@ -718,7 +731,7 @@ def inject_theme():
         .stLinkButton > a * { color: #ffffff !important; }
 
         /* item lists: left aligned rows with a teal edge on hover */
-        .stApp div[class*="st-key-pick_browser_"] button, .stApp div[class*="st-key-items_browser_"] button,
+        .stApp div[class*="st-key-acc_item_"] button, .stApp div[class*="st-key-pick_browser_"] button, .stApp div[class*="st-key-items_browser_"] button,
         .stApp div[class*="st-key-deposit_browser_"] button, .stApp div[class*="st-key-pr_open_"] button,
         .stApp div[class*="st-key-returnables_pending_"] button, .stApp div[class*="st-key-return_issue_"] button {
             justify-content: flex-start !important;
@@ -727,12 +740,12 @@ def inject_theme():
             border-left: 4px solid #cbd5e1 !important;
             padding-left: 0.9rem !important;
         }
-        .stApp div[class*="st-key-pick_browser_"] button:hover, .stApp div[class*="st-key-items_browser_"] button:hover,
+        .stApp div[class*="st-key-acc_item_"] button:hover, .stApp div[class*="st-key-pick_browser_"] button:hover, .stApp div[class*="st-key-items_browser_"] button:hover,
         .stApp div[class*="st-key-deposit_browser_"] button:hover, .stApp div[class*="st-key-pr_open_"] button:hover,
         .stApp div[class*="st-key-returnables_pending_"] button:hover, .stApp div[class*="st-key-return_issue_"] button:hover {
             border-left-color: #14b8a6 !important;
         }
-        .stApp div[class*="st-key-pick_browser_"] button p, .stApp div[class*="st-key-items_browser_"] button p,
+        .stApp div[class*="st-key-acc_item_"] button p, .stApp div[class*="st-key-pick_browser_"] button p, .stApp div[class*="st-key-items_browser_"] button p,
         .stApp div[class*="st-key-deposit_browser_"] button p, .stApp div[class*="st-key-pr_open_"] button p,
         .stApp div[class*="st-key-returnables_pending_"] button p { text-align: left !important; }
         /* qty boxes in the PR builder: the big − / ＋ buttons replace the tiny arrows */
@@ -756,7 +769,7 @@ def inject_theme():
         .stApp div[class*="st-key-pr_add_low"] button, .stApp div[class*="st-key-pr_add_out"] button,
         .stApp div[class*="st-key-pr_add_reqs"] button { min-height: 2.6rem !important; }
 
-        .stApp div[class*="st-key-pick_browser_"] button > div, .stApp div[class*="st-key-items_browser_"] button > div,
+        .stApp div[class*="st-key-acc_item_"] button > div, .stApp div[class*="st-key-pick_browser_"] button > div, .stApp div[class*="st-key-items_browser_"] button > div,
         .stApp div[class*="st-key-deposit_browser_"] button > div, .stApp div[class*="st-key-pr_open_"] button > div,
         .stApp div[class*="st-key-returnables_pending_"] button > div, .stApp div[class*="st-key-return_issue_"] button > div {
             justify-content: flex-start !important; width: 100%;
@@ -1118,6 +1131,26 @@ def show_manager_password_dialog():
         safe_rerun()
 
 
+@st.dialog("Accounts Access", width="small", dismissible=False)
+def show_accounts_password_dialog():
+    password = st.text_input("Enter accounts password", type="password", key="accounts_password_input")
+    unlock_col, cancel_col = st.columns(2)
+    if unlock_col.button("Unlock", key="accounts_unlock", type="primary"):
+        if check_accounts_password(password):
+            st.session_state["accounts_authenticated"] = True
+            st.session_state["manager_authenticated"] = False
+            st.session_state["role"] = "accounts"
+            st.session_state.pop("accounts_login_requested", None)
+            st.session_state.pop("accounts_password_input", None)
+            safe_rerun()
+        else:
+            st.error("Incorrect accounts password.")
+    if cancel_col.button("Cancel", key="accounts_cancel", type="secondary"):
+        st.session_state.pop("accounts_login_requested", None)
+        st.session_state.pop("accounts_password_input", None)
+        safe_rerun()
+
+
 def sidebar_identity(conn):
     with st.sidebar:
         if "role" not in st.session_state:
@@ -1145,7 +1178,9 @@ def sidebar_identity(conn):
                 st.session_state["role"] = "user"
                 st.session_state["user"] = "operator"
                 st.session_state["manager_authenticated"] = False
+                st.session_state["accounts_authenticated"] = False
                 st.session_state.pop("manager_login_requested", None)
+                st.session_state.pop("accounts_login_requested", None)
                 safe_rerun()
         with manager_col:
             manager_active = current_role == "manager" and manager_ready
@@ -1173,11 +1208,36 @@ def sidebar_identity(conn):
                     st.session_state["manager_login_requested"] = True
                     safe_rerun()
 
-        if not manager_ready and st.session_state.get("role") != "manager":
+        accounts_ready = bool(st.session_state.get("accounts_authenticated"))
+        accounts_active = current_role == "accounts" and accounts_ready
+        st.markdown(
+            f"""
+            <div class="role-card {'role-card-active' if accounts_active else ''}" style="margin-top:0.6rem">
+                <div class="role-card-title">Accounts</div>
+                <div class="role-card-copy">Item prices and total stock value.</div>
+                <div class="role-card-badge">{'Unlocked' if accounts_active else 'Password required'}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if st.button(
+            "Accounts Active" if accounts_active else "Use Accounts",
+            key="role_accounts_card", width="stretch",
+            type="primary" if accounts_active else "secondary",
+        ) and not accounts_active:
+            st.session_state["accounts_login_requested"] = True
+            safe_rerun()
+
+        role_now = st.session_state.get("role")
+        if role_now == "manager" and manager_ready:
+            st.session_state["user"] = "manager"
+            st.session_state["accounts_authenticated"] = False
+        elif role_now == "accounts" and accounts_ready:
+            st.session_state["user"] = "accounts"
+            st.session_state["manager_authenticated"] = False
+        else:
             st.session_state["role"] = "user"
             st.session_state["user"] = "operator"
-        elif manager_ready and st.session_state.get("role") == "manager":
-            st.session_state["user"] = "manager"
 
         st.markdown("---")
         st.caption(f"Access: **{st.session_state['role'].capitalize()}**")
@@ -1187,6 +1247,11 @@ def sidebar_identity(conn):
             st.warning(
                 "Manager password is still the default from the public code. "
                 "Set MANAGER_PASSWORD in the Streamlit app secrets."
+            )
+        if st.session_state.get("role") == "accounts" and accounts_password_is_default():
+            st.warning(
+                "Accounts password is the default (0909), which is visible in the public code. "
+                "Set ACCOUNTS_PASSWORD in the Streamlit app secrets."
             )
 
         # Database wipe: managers only, and only when a RESET_CODE secret exists.
@@ -1214,6 +1279,8 @@ def sidebar_identity(conn):
 
     if st.session_state.get("manager_login_requested"):
         show_manager_password_dialog()
+    elif st.session_state.get("accounts_login_requested"):
+        show_accounts_password_dialog()
 
 
 def filter_parts(parts, query):
@@ -1385,7 +1452,19 @@ def _show_item_details_dialog_body(conn):
     info = on_order(conn).get(part["part_id"])
     if info:
         st.info(f"🚚 {on_order_text(info)}")
-    if st.session_state.get("role") == "manager":
+    if st.session_state.get("role") == "accounts":
+        rate = None if part.get("rate") is None else float(part["rate"])
+        if rate is None:
+            st.caption("No price set yet.")
+        else:
+            st.success(f"Price {inr(rate)} / {part.get('unit') or 'unit'} · stock value "
+                       f"{inr(int(part.get('quantity') or 0) * rate)}")
+        if st.button("Set / change price", key="acc_from_items", icon=":material/sell:"):
+            st.session_state.pop("items_dialog_part_id", None)
+            st.session_state["acc_price_part"] = part["part_id"]
+            st.session_state["_nav_to"] = ACC_PRICING_NAV
+            st.rerun()
+    elif st.session_state.get("role") == "manager":
         h = item_purchase_history(conn, [part["part_id"]]).get(part["part_id"])
         if h:
             bits = [f"Last ordered {fmt_ist(h['ordered_at'])} on {h['pr_no']}"]
@@ -1396,7 +1475,7 @@ def _show_item_details_dialog_body(conn):
             if h.get("lead_days") is not None:
                 bits.append(f"arrived in {h['lead_days']} day(s)")
             st.caption(" ".join(bits))
-    elif int(part["quantity"] or 0) <= int(part["min_level"] or 0):
+    elif st.session_state.get("role") == "user" and int(part["quantity"] or 0) <= int(part["min_level"] or 0):
         render_stock_request_form(conn, part, "items")
 
     if st.button("Close", key="close_items_dialog", type="secondary"):
@@ -3883,6 +3962,253 @@ def purchase_page(conn):
         show_pr_dialog()
 
 
+# ── Accounts: pricing & stock value ────────────────────────────────────────
+ACC_VALUE_NAV = "💰 Stock value"
+ACC_PRICING_NAV = "🏷 Pricing"
+
+
+def inr(value, decimals=2):
+    """Indian digit grouping: 12,34,567.89"""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    neg = v < 0
+    whole, frac = f"{abs(v):.{decimals}f}".split(".") if decimals else (f"{abs(v):.0f}", "")
+    if len(whole) > 3:
+        head, tail = whole[:-3], whole[-3:]
+        groups = []
+        while len(head) > 2:
+            groups.insert(0, head[-2:])
+            head = head[:-2]
+        if head:
+            groups.insert(0, head)
+        whole = ",".join(groups + [tail])
+    out = f"₹{whole}" + (f".{frac}" if decimals else "")
+    return "-" + out if neg else out
+
+
+def _rate(p):
+    r = p.get("rate")
+    return None if r is None else float(r)
+
+
+@st.cache_data(ttl=300, show_spinner=False, max_entries=4)
+def _cached_last_purchase_rates(_conn, version):
+    return last_purchase_rates(_conn)
+
+
+@st.cache_data(ttl=300, show_spinner=False, max_entries=8)
+def _cached_price_log(_conn, version):
+    return [dict(r) for r in list_price_changes(_conn, limit=300)]
+
+
+def stock_value_page(conn):
+    _section_title("Stock value", "Value of the stock in the store, using the prices set by Accounts.")
+    parts = [p for p in all_parts(conn) if p.get("active")]
+    priced = [p for p in parts if _rate(p) is not None]
+    unpriced = [p for p in parts if _rate(p) is None]
+    unpriced_in_stock = [p for p in unpriced if int(p.get("quantity") or 0) > 0]
+    total = sum(int(p.get("quantity") or 0) * _rate(p) for p in priced)
+    pct = round(100 * len(priced) / len(parts)) if parts else 0
+
+    st.markdown(
+        f"""
+        <div class="metrics-grid">
+            <div class="metric-card mc-accent"><div class="metric-icon">💰</div>
+                <div class="metric-label">Total stock value</div><div class="metric-value m-accent">{inr(total, 0)}</div></div>
+            <div class="metric-card"><div class="metric-icon">🏷️</div>
+                <div class="metric-label">Items priced</div><div class="metric-value">{len(priced)} / {len(parts)}</div></div>
+            <div class="metric-card {'mc-danger' if unpriced_in_stock else ''}"><div class="metric-icon">❓</div>
+                <div class="metric-label">In stock but no price</div>
+                <div class="metric-value {'m-danger' if unpriced_in_stock else ''}">{len(unpriced_in_stock)}</div></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.progress(pct / 100, text=f"{pct}% of items have a price")
+    if unpriced_in_stock:
+        st.warning(
+            f"{len(unpriced_in_stock)} item(s) with stock have no price yet "
+            f"({sum(int(p.get('quantity') or 0) for p in unpriced_in_stock)} units), so the total above is lower "
+            "than the real value. Set them in Pricing."
+        )
+        if st.button("Go to items without a price", key="acc_go_pricing", icon=":material/sell:"):
+            st.session_state["acc_filter"] = "Not priced yet"
+            st.session_state["_nav_to"] = ACC_PRICING_NAV
+            st.rerun()
+
+    rows = [{
+        "Item code": p["part_id"], "Name": p["name"], "Category": normalize_category(p.get("category")),
+        "Stock": int(p.get("quantity") or 0), "Unit": p.get("unit") or "Nos",
+        "Price / unit ₹": _rate(p), "Value ₹": (int(p.get("quantity") or 0) * _rate(p)) if _rate(p) is not None else None,
+        "Price set by": p.get("rate_updated_by") or "", "Price updated": fmt_ist(p.get("rate_updated_at")),
+    } for p in parts]
+    df = pd.DataFrame(rows)
+
+    left, right = st.columns(2)
+    with left:
+        st.markdown('<div class="section-label">Value by category</div>', unsafe_allow_html=True)
+        cat = (df.assign(Priced=df["Price / unit ₹"].notna())
+                 .groupby("Category", as_index=False)
+                 .agg(Items=("Item code", "count"), Priced=("Priced", "sum"), Units=("Stock", "sum"),
+                      Value=("Value ₹", "sum")))
+        cat = cat.sort_values("Value", ascending=False)
+        cat["Share"] = cat["Value"] / total if total else 0.0
+        st.dataframe(cat, hide_index=True, width="stretch", column_config={
+            "Value": st.column_config.NumberColumn("Value ₹", format="₹ %.0f"),
+            "Share": st.column_config.ProgressColumn("Share", format="percent", min_value=0, max_value=1),
+            "Priced": st.column_config.NumberColumn("Priced", format="%d"),
+        })
+    with right:
+        st.markdown('<div class="section-label">Highest value items</div>', unsafe_allow_html=True)
+        top = df.dropna(subset=["Value ₹"]).sort_values("Value ₹", ascending=False).head(10)
+        if top.empty:
+            st.info("No priced items with stock yet.")
+        else:
+            st.dataframe(top[["Name", "Stock", "Price / unit ₹", "Value ₹"]], hide_index=True, width="stretch",
+                         column_config={"Price / unit ₹": st.column_config.NumberColumn(format="₹ %.2f"),
+                                        "Value ₹": st.column_config.NumberColumn(format="₹ %.0f")})
+
+    st.markdown('<div class="section-label">Full stock valuation</div>', unsafe_allow_html=True)
+    q = (live_search_input("Search", "Item, code, category…", "acc_value_search") or "").strip()
+    view = df if not q else df[[row_matches([r["Item code"], r["Name"], r["Category"]], q) for r in rows]]
+    st.dataframe(view, hide_index=True, width="stretch", height=420, column_config={
+        "Price / unit ₹": st.column_config.NumberColumn(format="₹ %.2f"),
+        "Value ₹": st.column_config.NumberColumn(format="₹ %.2f"),
+    })
+    st.download_button(
+        "⬇ Export stock valuation (Excel CSV)",
+        df.to_csv(index=False).encode("utf-8-sig"),
+        file_name=f"stock_valuation_{_today_ist()}.csv", mime="text/csv", key="acc_value_export",
+    )
+
+
+@st.dialog("Set item price", width="medium")
+def show_price_dialog():
+    with db_session() as conn:
+        _price_dialog_body(conn)
+
+
+def _price_dialog_body(conn):
+    pid = st.session_state.get("acc_price_part")
+    part = get_part(conn, pid) if pid else None
+    if not part:
+        st.session_state.pop("acc_price_part", None)
+        st.rerun()
+        return
+    current = None if part.get("rate") is None else float(part["rate"])
+    qty = int(part.get("quantity") or 0)
+    st.markdown(
+        f"<div class='res-line'><b>{esc(part['name'])}</b> <span class='res-code'>{esc(pid)}</span>"
+        f"<div class='res-meta'>{esc(part.get('description') or '')}</div>"
+        f"<div class='res-meta'>Stock <b>{qty} {esc(part.get('unit') or 'Nos')}</b> · "
+        f"Current price <b>{inr(current) if current is not None else 'not set'}</b>"
+        + (f" · set by {esc(part.get('rate_updated_by') or '')} on {fmt_ist(part.get('rate_updated_at'))}"
+           if current is not None else "")
+        + "</div></div>",
+        unsafe_allow_html=True,
+    )
+    hint = _cached_last_purchase_rates(conn, data_version()).get(pid)
+    if hint:
+        st.caption(f"Last purchase rate on {hint[1]}: {inr(hint[0])}" + (f" from {hint[2]}" if hint[2] else ""))
+
+    with st.form(f"acc_price_form_{pid}", border=False):
+        actor = st.text_input("Your name *", value=st.session_state.get("acc_actor_saved", ""),
+                              placeholder="Saved with the change as proof")
+        new_rate = st.number_input(
+            f"Price per {part.get('unit') or 'unit'} (₹) *", min_value=0.0, step=1.0, format="%.2f",
+            value=current if current is not None else (hint[0] if hint else 0.0),
+        )
+        note = st.text_input("Note (optional)", placeholder="e.g. as per invoice 4471, incl. GST")
+        b1, b2 = st.columns(2)
+        save = b1.form_submit_button("Save price", type="primary", icon=":material/save:", width="stretch")
+        save_next = b2.form_submit_button("Save & next unpriced", icon=":material/skip_next:", width="stretch")
+    if save or save_next:
+        if not new_rate or float(new_rate) <= 0:
+            st.error("Enter a price above zero.")
+            return
+        try:
+            changed = set_item_rate(conn, pid, new_rate, actor, note)
+        except ValueError as exc:
+            st.error(str(exc))
+            return
+        st.session_state["acc_actor_saved"] = actor.strip()
+        bump_data_version()
+        st.toast(f"{part['name']}: {inr(new_rate)}" if changed else "Price unchanged", icon="🏷")
+        nxt = None
+        if save_next:
+            nxt = next((p["part_id"] for p in all_parts(conn)
+                        if p.get("active") and p.get("rate") is None and p["part_id"] != pid), None)
+        if nxt:
+            st.session_state["acc_price_part"] = nxt
+        else:
+            st.session_state.pop("acc_price_part", None)
+        st.rerun()
+
+    log = list_price_changes(conn, part_id=pid, limit=10)
+    if log:
+        st.markdown("**Price history**")
+        st.dataframe(pd.DataFrame([{
+            "When": fmt_ist(r["created_at"]),
+            "Old": None if r["old_rate"] is None else float(r["old_rate"]),
+            "New": float(r["new_rate"]), "By": r["changed_by"], "Note": r["note"],
+        } for r in log]), hide_index=True, width="stretch",
+            column_config={"Old": st.column_config.NumberColumn(format="₹ %.2f"),
+                           "New": st.column_config.NumberColumn(format="₹ %.2f")})
+
+
+def pricing_page(conn):
+    _section_title("Item pricing", "Set the price of each item. Every change is saved with your name and the time.")
+    parts = [p for p in all_parts(conn) if p.get("active")]
+    priced = sum(1 for p in parts if _rate(p) is not None)
+    st.progress(priced / len(parts) if parts else 0, text=f"{priced} of {len(parts)} items priced")
+
+    c1, c2 = st.columns([0.45, 0.55])
+    with c1:
+        st.session_state.setdefault("acc_filter", "Not priced yet")
+        flt = st.segmented_control("Show", ["Not priced yet", "Priced", "All"], key="acc_filter",
+                                   label_visibility="collapsed") or "All"
+    with c2:
+        q = (live_search_input("Search item", "Search name, code or size…", "acc_price_search") or "").strip()
+    if flt == "Not priced yet":
+        pool = [p for p in parts if _rate(p) is None]
+        # items that actually sit on the shelf first: they affect the stock value
+        pool.sort(key=lambda p: (int(p.get("quantity") or 0) <= 0, str(p.get("name") or "").lower()))
+    elif flt == "Priced":
+        pool = [p for p in parts if _rate(p) is not None]
+    else:
+        pool = parts
+    shown = search_parts(pool, q)[:60]
+    if not shown:
+        st.success("Every item has a price. 🎉" if flt == "Not priced yet" and not q else "No items match.")
+    else:
+        st.caption(f"Showing {len(shown)} of {len(search_parts(pool, q))}. Tap an item to set its price.")
+        for p in shown:
+            r = _rate(p)
+            qty = int(p.get("quantity") or 0)
+            price_txt = f"{inr(r)} / {p.get('unit') or 'unit'}  ·  value {inr(qty * r, 0)}" if r is not None else "no price"
+            if st.button(f"{'🏷' if r is not None else '❓'}  {p['name']}  ·  {p['part_id']}  —  stock {qty}  ·  {price_txt}",
+                         key=f"acc_item_{p['part_id']}", width="stretch"):
+                st.session_state["acc_price_part"] = p["part_id"]
+                st.rerun()
+    if st.session_state.get("acc_price_part"):
+        show_price_dialog()
+
+    with st.expander("🧾 Price change log"):
+        log = _cached_price_log(conn, data_version())
+        if not log:
+            st.caption("No price changes yet.")
+        else:
+            st.dataframe(pd.DataFrame([{
+                "When (IST)": fmt_ist(r["created_at"]), "Item": r["part_name"], "Code": r["part_id"],
+                "Old ₹": None if r["old_rate"] is None else float(r["old_rate"]),
+                "New ₹": float(r["new_rate"]), "By": r["changed_by"], "Note": r["note"],
+            } for r in log]), hide_index=True, width="stretch",
+                column_config={"Old ₹": st.column_config.NumberColumn(format="₹ %.2f"),
+                               "New ₹": st.column_config.NumberColumn(format="₹ %.2f")})
+
+
 def render_main_navigation(options, key):
     jump = st.session_state.pop("_nav_to", None)
     if jump in options:
@@ -3926,6 +4252,8 @@ def clear_inactive_page_state(active_section):
         st.session_state.pop("items_dialog_part_id", None)
     if active_section != PR_NAV:
         st.session_state.pop("pr_dialog_id", None)
+    if active_section != "🏷 Pricing":
+        st.session_state.pop("acc_price_part", None)
 
 
 def main():
@@ -4031,6 +4359,18 @@ def render_app(conn):
             history_page(conn)
         else:
             alerts_page(conn)
+    elif role == "accounts":
+        nav_options = [ACC_VALUE_NAV, ACC_PRICING_NAV, "📦 Items", "📋 History"]
+        active_section = render_main_navigation(nav_options, "main_nav_accounts")
+        clear_inactive_page_state(active_section)
+        if active_section == ACC_PRICING_NAV:
+            pricing_page(conn)
+        elif active_section == "📦 Items":
+            items_page(conn)
+        elif active_section == "📋 History":
+            history_page(conn)
+        else:
+            stock_value_page(conn)
     else:
         nav_options = ["⬆ Pick", "📦 Items", "📋 History", "🔔 Alerts"]
         active_section = render_main_navigation(nav_options, "main_nav_user")

@@ -22,6 +22,10 @@ streamlit run app.py
 
 ## Access
 
+- **Accounts** - unlocked with `ACCOUNTS_PASSWORD` (default 0909): sets item prices one by one
+  (every change logged with name and time) and sees the total stock value by category, with
+  an Excel export. Prices are not shown to User or Manager.
+
 - **User** - issue material, browse items, view history and alerts.
 - **Manager** - unlocked with `MANAGER_PASSWORD`; adds inward, returnables,
   item master, dashboard.
