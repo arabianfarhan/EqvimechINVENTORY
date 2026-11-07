@@ -3503,7 +3503,11 @@ def pr_print_html(detail):
 </body></html>"""
 
 
-@st.dialog("Purchase requisition", width="large")
+def _close_pr_dialog():
+    st.session_state.pop("pr_dialog_id", None)
+
+
+@st.dialog("Purchase requisition", width="large", on_dismiss=_close_pr_dialog)
 def show_pr_dialog():
     with db_session() as conn:
         _pr_dialog_body(conn)
@@ -3996,6 +4000,7 @@ def purchase_page(conn):
 # ── Accounts: pricing & stock value ────────────────────────────────────────
 ACC_VALUE_NAV = "💰 Stock value"
 ACC_PRICING_NAV = "🏷 Pricing"
+DEFAULT_ACCOUNTS_NAME = "Mohan"
 
 
 def inr(value, decimals=2):
@@ -4115,7 +4120,11 @@ def stock_value_page(conn):
     )
 
 
-@st.dialog("Set item price", width="medium")
+def _close_price_dialog():
+    st.session_state.pop("acc_price_part", None)
+
+
+@st.dialog("Set item price", width="medium", on_dismiss=_close_price_dialog)
 def show_price_dialog():
     with db_session() as conn:
         _price_dialog_body(conn)
@@ -4145,7 +4154,7 @@ def _price_dialog_body(conn):
         st.caption(f"Last purchase rate on {hint[1]}: {inr(hint[0])}" + (f" from {hint[2]}" if hint[2] else ""))
 
     with st.form(f"acc_price_form_{pid}", border=False):
-        actor = st.text_input("Your name *", value=st.session_state.get("acc_actor_saved", ""),
+        actor = st.text_input("Your name *", value=st.session_state.get("acc_actor_saved") or DEFAULT_ACCOUNTS_NAME,
                               placeholder="Saved with the change as proof")
         new_rate = st.number_input(
             f"Price per {part.get('unit') or 'unit'} (₹) *", min_value=0.0, step=1.0, format="%.2f",
