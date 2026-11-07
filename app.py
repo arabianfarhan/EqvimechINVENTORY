@@ -13,6 +13,37 @@ import psycopg2.errors
 import streamlit as st
 from st_keyup import st_keyup
 
+
+def _load_fresh(module_name):
+    """Import one of the app's own modules, reloading it if its file changed.
+
+    Streamlit Cloud pulls new code into the running app and re-runs app.py, but
+    keeps the old copy of db.py etc. in memory. Without this, an update that adds
+    a function to db.py crashes with "ImportError: cannot import name ...".
+    """
+    import importlib
+    import sys
+
+    module = sys.modules.get(module_name)
+    if module is None:
+        module = importlib.import_module(module_name)
+    else:
+        try:
+            mtime = os.path.getmtime(module.__file__)
+        except (OSError, TypeError, AttributeError):
+            mtime = None
+        if mtime is not None and getattr(module, "_loaded_mtime", None) != mtime:
+            module = importlib.reload(module)
+    try:
+        module._loaded_mtime = os.path.getmtime(module.__file__)
+    except (OSError, TypeError, AttributeError):
+        pass
+    return module
+
+
+for _mod in ("search", "duplicates", "pr_pdf", "db"):
+    _load_fresh(_mod)
+
 from search import row_matches, search_parts
 from duplicates import find_duplicate_groups, is_possible_duplicate
 from pr_pdf import build_pr_pdf
