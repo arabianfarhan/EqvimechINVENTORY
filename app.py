@@ -98,6 +98,7 @@ from db import (
     list_vendors,
     mark_pr_ordered,
     on_order_map,
+    find_similar_inwards,
     receive_pr,
     save_vendor,
     update_pr_expected_date,
@@ -1736,39 +1737,89 @@ def _show_deposit_dialog_body(conn):
         placeholder="e.g. GRN-001 / Vendor invoice (required)",
         key=f"deposit_note_{part_id}",
     )
+    pending_key = f"deposit_check_{part_id}"
+    pending = st.session_state.get(pending_key)
+    if pending and (pending["qty"] != int(qty) or pending["note"] != note.strip()):
+        # quantity or GRN changed after the warning: check again on the next Confirm
+        st.session_state.pop(pending_key, None)
+        pending = None
+
+    def _do_deposit():
+        try:
+            new_balance = deposit_stock(
+                conn, part["part_id"], int(qty), st.session_state["user"], st.session_state["role"], note.strip(),
+            )
+        except Exception as exc:
+            st.error(str(exc))
+            return
+        bump_data_version()
+        # record deposit done state so we can show animation on the main page
+        st.session_state["deposit_done"] = {
+            "part": part["name"], "qty": int(qty), "balance": new_balance, "unit": part["unit"],
+        }
+        st.session_state["deposit_animation_shown"] = False
+        st.session_state.pop("deposit_dialog_part_id", None)
+        st.session_state.pop(pending_key, None)
+        clear_widget_keys("deposit_", part_id)
+        safe_rerun()
+
+    if pending:
+        st.warning("**Is this the same delivery again?**\n\n" + "\n".join(f"- {w}" for w in pending["warns"])
+                   + "\n\nCheck the History before adding the stock a second time.", icon="⚠️")
+        yes_col, no_col = st.columns(2)
+        if yes_col.button("Yes, it's a new delivery — inward", key=f"deposit_yes_{part_id}", type="primary",
+                          width="stretch"):
+            _do_deposit()
+        if no_col.button("No, don't inward", key=f"deposit_no_{part_id}", type="secondary", width="stretch"):
+            st.session_state.pop(pending_key, None)
+            st.session_state.pop("deposit_dialog_part_id", None)
+            clear_widget_keys("deposit_", part_id)
+            safe_rerun()
+        return
+
     action_col, close_col = st.columns(2)
     if action_col.button("📥  Confirm Inward", key=f"confirm_deposit_{part_id}", type="primary"):
         if not note.strip():
             st.error("Note / GRN reference is required.")
         else:
-            try:
-                new_balance = deposit_stock(
-                    conn,
-                    part["part_id"],
-                    int(qty),
-                    st.session_state["user"],
-                    st.session_state["role"],
-                    note.strip(),
-                )
-                bump_data_version()
-                # record deposit done state so we can show animation on the main page
-                st.session_state["deposit_done"] = {
-                    "part": part["name"],
-                    "qty": int(qty),
-                    "balance": new_balance,
-                    "unit": part["unit"],
-                }
-                st.session_state["deposit_animation_shown"] = False
-                st.session_state.pop("deposit_dialog_part_id", None)
-                clear_widget_keys("deposit_", part_id)
-                safe_rerun()
-            except Exception as exc:
-                st.error(str(exc))
+            warns = inward_warnings(conn, part, int(qty), note.strip(), check_open_pr=True)
+            if warns:
+                st.session_state[pending_key] = {"qty": int(qty), "note": note.strip(), "warns": warns}
+                st.rerun(scope="fragment")
+            else:
+                _do_deposit()
 
     if close_col.button("Cancel", key=f"close_deposit_dialog_{part_id}", type="secondary"):
         st.session_state.pop("deposit_dialog_part_id", None)
+        st.session_state.pop(pending_key, None)
         clear_widget_keys("deposit_", part_id)
         safe_rerun()
+
+
+def inward_warnings(conn, part, qty, grn, check_open_pr=False, days=7):
+    """Plain-language reasons this stock-in may be a repeat of an earlier one."""
+    warns = []
+    unit = part.get("unit") or "Nos"
+    for r in find_similar_inwards(conn, part["part_id"], qty, grn, days=days):
+        how = "PR receipt" if str(r.get("purpose") or "").startswith("PR receipt") else "Inward"
+        what = []
+        if "same_qty" in r["reasons"]:
+            what.append(f"same quantity ({int(r['qty'])} {unit})")
+        if "same_grn" in r["reasons"]:
+            what.append("same GRN / invoice no.")
+        warns.append(
+            f"**{part['name']}**: {' and '.join(what)} already booked by {how} on "
+            f"{fmt_ist(r['created_at'])} by {r['performed_by'] or '—'} — note “{r['note'] or ''}”"
+        )
+    if check_open_pr:
+        info = on_order(conn).get(part["part_id"])
+        if info:
+            warns.append(
+                f"**{part['name']}** is on an open PR — {on_order_text(info)}. If these goods are for that PR, "
+                "use **🧾 Purchase → Receive goods** instead, otherwise the PR will still show them as pending "
+                "and they may be counted again later."
+            )
+    return warns
 
 
 def _show_return_dialog_body(conn):
@@ -3615,13 +3666,42 @@ def _pr_dialog_body(conn):
             c1, c2 = st.columns(2)
             by = c1.text_input("Received by *", placeholder="Your name")
             grn = c2.text_input("GRN / challan / invoice no. *")
-            if st.form_submit_button("Confirm goods received", type="primary", width="stretch"):
-                try:
-                    new_status = receive_pr(conn, pr_id, qtys, by, grn)
-                    done_msg = ("All items received — PR complete." if new_status == "received"
-                                else "Part receipt saved. The rest stays open as pending.")
-                except ValueError as exc:
-                    error = str(exc)
+            submitted = st.form_submit_button("Confirm goods received", type="primary", width="stretch")
+        recv_key = f"pr_recv_check_{pr_id}"
+        to_save = None
+        if submitted:
+            st.session_state.pop(recv_key, None)
+            got = {k: int(v or 0) for k, v in qtys.items() if int(v or 0) > 0}
+            warns = []
+            if got and str(by or "").strip() and str(grn or "").strip():
+                by_line = {l["id"]: l for l in pending_lines}
+                for line_id, q in got.items():
+                    part = get_part(conn, by_line[line_id]["part_id"])
+                    if part:
+                        warns += inward_warnings(conn, part, q, grn.strip())
+            if warns:
+                st.session_state[recv_key] = {"qtys": qtys, "by": by, "grn": grn, "warns": warns}
+            else:
+                to_save = (qtys, by, grn)
+        check = st.session_state.get(recv_key)
+        if check and not to_save:
+            st.warning("**Is this the same delivery again?**\n\n" + "\n".join(f"- {w}" for w in check["warns"])
+                       + "\n\nCheck the History before adding the stock a second time.", icon="⚠️")
+            y, n = st.columns(2)
+            if y.button("Yes, it's a new delivery — receive", key=f"pr_recv_yes_{pr_id}", type="primary",
+                        width="stretch"):
+                to_save = (check["qtys"], check["by"], check["grn"])
+            if n.button("No, don't receive", key=f"pr_recv_no_{pr_id}", type="secondary", width="stretch"):
+                st.session_state.pop(recv_key, None)
+                st.rerun(scope="fragment")
+        if to_save:
+            st.session_state.pop(recv_key, None)
+            try:
+                new_status = receive_pr(conn, pr_id, *to_save)
+                done_msg = ("All items received — PR complete." if new_status == "received"
+                            else "Part receipt saved. The rest stays open as pending.")
+            except ValueError as exc:
+                error = str(exc)
     elif action == "📅 Change expected date":
         with st.form(f"pr_date_{pr_id}", border=True):
             c1, c2 = st.columns(2)

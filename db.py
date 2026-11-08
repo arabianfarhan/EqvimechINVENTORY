@@ -3,6 +3,7 @@ import difflib
 import functools
 import json
 import os
+import re
 import threading
 import time
 from zoneinfo import ZoneInfo
@@ -2111,6 +2112,46 @@ def on_order_map(conn):
         entry["qty"] += int(r["pending"])
         entry["prs"].append((r["pr_no"], r["due"]))
     return result
+
+
+def _grn_pattern(grn):
+    """'GRN-001' matches 'grn 001', 'GRN/001', 'PR-0003 · GRN-001' but not 'GRN-0012'."""
+    chars = [ch for ch in str(grn or "").lower() if ch.isalnum()]
+    if len(chars) < 3:
+        return None
+    return re.compile(r"(?<![a-z0-9])" + r"[^a-z0-9]*".join(re.escape(ch) for ch in chars) + r"(?![a-z0-9])")
+
+
+def find_similar_inwards(conn, part_id, qty, grn="", days=7):
+    """Earlier stock-ins of this item that look like the same delivery.
+
+    Returns a list of dicts (newest first), each with a ``reason``:
+      'same_qty'  - same quantity came in during the last ``days`` days
+      'same_grn'  - the same GRN / invoice reference was already used for this item
+    Covers both Inward and PR receipts (both are 'deposit' rows in History).
+    """
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT id, qty, unit, performed_by, note, purpose, created_at,
+               created_at >= NOW() - (%s * INTERVAL '1 day') AS recent
+        FROM transactions
+        WHERE tx_type = 'deposit' AND part_id = %s AND created_at >= NOW() - INTERVAL '400 days'
+        ORDER BY created_at DESC
+        """,
+        (int(days), part_id),
+    )
+    pattern = _grn_pattern(grn)
+    found = []
+    for r in c.fetchall():
+        reasons = []
+        if r["recent"] and int(r["qty"] or 0) == int(qty or 0):
+            reasons.append("same_qty")
+        if pattern and pattern.search(str(r["note"] or "").lower()):
+            reasons.append("same_grn")
+        if reasons:
+            found.append({**dict(r), "reasons": reasons})
+    return found[:5]
 
 
 def item_purchase_history(conn, part_ids):
