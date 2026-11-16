@@ -3863,12 +3863,12 @@ def _pr_pending_view(conn):
     ])
     sel = st.dataframe(
         df.drop(columns=["_id"]), hide_index=True, width="stretch", height=min(480, 38 + 35 * len(df)),
-        on_select="rerun", selection_mode="single-row", key="pr_pending_table",
+        on_select="rerun", selection_mode="single-row", key=f"pr_pending_table_{st.session_state.get('pr_pending_table_n', 0)}",
     )
     picked = (sel.selection.rows if sel else []) or []
     if picked:
         st.session_state["pr_dialog_id"] = int(df.iloc[picked[0]]["_id"])
-        st.session_state.pop("pr_pending_table", None)
+        st.session_state["pr_pending_table_n"] = st.session_state.get("pr_pending_table_n", 0) + 1
         st.rerun()
     b1, b2 = st.columns(2)
     with b1:
@@ -3953,13 +3953,13 @@ def _pr_register_view(conn):
     st.caption(f"{len(df)} PR(s). Click a row to open it.")
     sel = st.dataframe(
         df.drop(columns=["_id"]), hide_index=True, width="stretch", height=min(440, 38 + 35 * len(df)),
-        on_select="rerun", selection_mode="single-row", key="pr_reg_table",
+        on_select="rerun", selection_mode="single-row", key=f"pr_reg_table_{st.session_state.get('pr_reg_table_n', 0)}",
         column_config={"Value ₹": st.column_config.NumberColumn(format="%.2f")},
     )
     rows = (sel.selection.rows if sel else []) or []
     if rows:
         st.session_state["pr_dialog_id"] = int(df.iloc[rows[0]]["_id"])
-        st.session_state.pop("pr_reg_table", None)
+        st.session_state["pr_reg_table_n"] = st.session_state.get("pr_reg_table_n", 0) + 1
         st.rerun()
     st.download_button(
         "⬇ Export PR register (Excel CSV)",
