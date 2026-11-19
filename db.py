@@ -995,30 +995,47 @@ def low_stock_alerts(conn):
 
 
 def list_transactions(conn, tx_type="all", search="", performed_by=None, limit=250, since_days=None):
+    """History rows, newest first.
+
+    Each row also carries ``item_now`` (the item's current name) and ``make``, so records moved
+    onto an item by a duplicate merge show and search under that item, not the old duplicate's
+    name. The search uses the app's forgiving matching (spaces / word order don't matter).
+    """
     c = conn.cursor()
-    sql = "SELECT * FROM transactions WHERE 1=1"
+    sql = (
+        "SELECT t.*, COALESCE(NULLIF(p.name, ''), t.part_name) AS item_now, COALESCE(p.make, '') AS make "
+        "FROM transactions t LEFT JOIN parts p ON p.part_id = t.part_id WHERE 1=1"
+    )
     params = []
     if since_days is not None:
         # since_days=0 means "today" in India time
         sql += (
-            " AND (created_at AT TIME ZONE 'Asia/Kolkata')::date >= "
+            " AND (t.created_at AT TIME ZONE 'Asia/Kolkata')::date >= "
             "(NOW() AT TIME ZONE 'Asia/Kolkata')::date - %s"
         )
         params.append(int(since_days))
     if tx_type != "all":
-        sql += " AND tx_type = %s"
+        sql += " AND t.tx_type = %s"
         params.append(tx_type)
     if performed_by:
-        sql += " AND performed_by = %s"
+        sql += " AND t.performed_by = %s"
         params.append(performed_by)
-    if search:
-        sql += " AND (part_id ILIKE %s OR part_name ILIKE %s OR machine_sn ILIKE %s OR purpose ILIKE %s OR note ILIKE %s OR performed_by ILIKE %s)"
-        like_query = f"%{search}%"
-        params.extend([like_query, like_query, like_query, like_query, like_query, like_query])
-    sql += " ORDER BY created_at DESC LIMIT %s"
-    params.append(limit)
+    sql += " ORDER BY t.created_at DESC, t.id DESC LIMIT %s"
+    search = str(search or "").strip()
+    params.append(max(int(limit), 20000) if search else int(limit))
     c.execute(sql, params)
-    return c.fetchall()
+    rows = c.fetchall()
+    if not search:
+        return rows
+    from search import row_matches
+    keys = ("item_now", "part_id", "part_name", "make", "machine_sn", "purpose", "note", "performed_by")
+    out = []
+    for r in rows:
+        if row_matches([r.get(k) for k in keys], search):
+            out.append(r)
+            if len(out) >= limit:
+                break
+    return out
 
 
 def list_open_returnable_issues(conn, search="", performed_by=None, limit=200):

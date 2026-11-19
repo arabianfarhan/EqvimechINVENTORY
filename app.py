@@ -1498,8 +1498,7 @@ def _show_item_details_dialog_body(conn):
             <div class="item-name-row"><span class="item-name">{esc(part['name'])}</span><span class="item-code-badge">{esc(part['part_id'])}</span></div>
             <div class="item-desc">{esc(part['description'])}</div>
             <div class="pill-row">
-                {make_pill(part)}
-                <span class="pill p-neutral">Location: {esc(part['location'])}</span>
+                {make_pill(part)}<span class="pill p-neutral">Location: {esc(part['location'])}</span>
                 <span class="pill p-neutral">Category: {esc(safe_part_field(part, 'category', 'Others'))}</span>
                 <span class="pill p-neutral">Unit: {esc(part['unit'])}</span>
                 <span class="pill p-neutral">Min {part['min_level']} &nbsp;&middot;&nbsp; Reorder {part['reorder_qty']}</span>
@@ -1558,8 +1557,7 @@ def _show_pick_dialog_body(conn):
             <div class="item-name-row"><span class="item-name">{esc(part['name'])}</span><span class="item-code-badge">{esc(part['part_id'])}</span></div>
             <div class="item-desc">{esc(part['description'])}</div>
             <div class="pill-row">
-                {make_pill(part)}
-                <span class="pill p-neutral">Location: {esc(part['location'])}</span>
+                {make_pill(part)}<span class="pill p-neutral">Location: {esc(part['location'])}</span>
                 <span class="pill p-neutral">Category: {esc(safe_part_field(part, 'category', 'Others'))}</span>
                 {stock_pill(part['quantity'], part['min_level'])}
                 <span class="pill p-neutral">Min {part['min_level']} &nbsp;&middot;&nbsp; Reorder {part['reorder_qty']}</span>
@@ -1745,8 +1743,7 @@ def _show_deposit_dialog_body(conn):
             <div class="item-name-row"><span class="item-name">{esc(part['name'])}</span><span class="item-code-badge">{esc(part['part_id'])}</span></div>
             <div class="item-desc">{esc(part['description'])}</div>
             <div class="pill-row">
-                {make_pill(part)}
-                <span class="pill p-neutral">Location: {esc(part['location'])}</span>
+                {make_pill(part)}<span class="pill p-neutral">Location: {esc(part['location'])}</span>
                 <span class="pill p-neutral">Category: {esc(safe_part_field(part, 'category', 'Others'))}</span>
                 <span class="pill p-neutral">Unit: {esc(part['unit'])}</span>
                 {stock_pill(part['quantity'], part['min_level'])}
@@ -2014,8 +2011,7 @@ def _success_card(icon, title, detail_html, extra_html=""):
         <div class="done-card">
             <div class="done-icon">{icon}</div>
             <div class="done-title">{title}</div>
-            <div class="done-detail">{detail_html}</div>
-            {extra_html}
+            <div class="done-detail">{detail_html}</div>{extra_html}
         </div>
         """,
         unsafe_allow_html=True,
@@ -2772,6 +2768,9 @@ HISTORY_COLUMN_CONFIG = {
     "return_status": st.column_config.TextColumn("Return"),
     "part_name": st.column_config.TextColumn("Item"),
     "part_id": st.column_config.TextColumn("Code"),
+    "recorded_as": st.column_config.TextColumn("Recorded as", help="Name at the time, if the item was renamed or "
+                                               "merged since"),
+    "part_id": st.column_config.TextColumn("Code"),
     "qty": st.column_config.NumberColumn("Qty", format="%d"),
     "unit": st.column_config.TextColumn("Unit"),
     "performed_by": st.column_config.TextColumn("By"),
@@ -2838,6 +2837,8 @@ def dashboard_page(conn):
         st.info("No stock movement yet.")
     else:
         rdf["tx_type"] = rdf["tx_type"].map(TX_TYPE_LABELS).fillna(rdf["tx_type"])
+        if "item_now" in rdf.columns:
+            rdf["part_name"] = rdf["item_now"].fillna(rdf["part_name"])
         cols = [c for c in ["created_at", "tx_type", "part_name", "qty", "unit", "performed_by", "machine_sn", "balance_stock"] if c in rdf.columns]
         st.dataframe(rdf[cols], width="stretch", hide_index=True, column_config=HISTORY_COLUMN_CONFIG)
 
@@ -2877,8 +2878,14 @@ def _history(conn):
     df["return_status"] = df.apply(_return_status, axis=1)
     df = to_ist(df)
     df["tx_type"] = df["tx_type"].map(TX_TYPE_LABELS).fillna(df["tx_type"])
-    cols = [c for c in ["created_at", "tx_type", "part_name", "qty", "unit", "performed_by", "machine_sn",
-                         "purpose", "return_status", "prev_stock", "balance_stock", "note"] if c in df.columns]
+    if "item_now" in df.columns:
+        # show the item's current name; keep the name it had then when different (e.g. merged duplicate)
+        recorded = df["part_name"].fillna("")
+        df["recorded_as"] = recorded.where(recorded != df["item_now"].fillna(""), "")
+        df["part_name"] = df["item_now"].fillna(recorded)
+    cols = [c for c in ["created_at", "tx_type", "part_name", "part_id", "qty", "unit", "performed_by", "machine_sn",
+                         "purpose", "return_status", "prev_stock", "balance_stock", "note", "recorded_as"]
+            if c in df.columns]
     st.caption(f"{len(df)} record(s)" + (" — showing the latest 1000" if len(df) >= 1000 else ""))
     st.dataframe(df[cols], width="stretch", hide_index=True, height=480, column_config=HISTORY_COLUMN_CONFIG)
     st.download_button(
