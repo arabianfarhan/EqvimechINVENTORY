@@ -36,6 +36,25 @@ _HARD_DIFF = {"csk", "countersunk", "top", "bottom", "base", "temp", "semi", "ci
 _SOFT_DIFF = {"ht", "hex", "socket", "head", "std", "standard", "steel", "allen", "pc", "set", "w", "gm", "kg", "kn"}
 
 
+def _make(part):
+    return " ".join(str(part.get("make") or "").lower().split())
+
+
+def _desc_nums(part):
+    return frozenset(n.lstrip("0") or "0" for n in _NUM.findall(str(part.get("description") or "")))
+
+
+def _different_size_in_desc(a, b):
+    """'HCP Bar' 10mm x 1000 vs 30mm x 1700: same name, but the sizes in the description differ."""
+    da, db = _desc_nums(a), _desc_nums(b)
+    return bool(da and db and not (da & db))
+
+
+def _different_make(a, b):
+    ma, mb = _make(a), _make(b)
+    return bool(ma and mb and ma != mb)
+
+
 def _conflict(a_words, b_words):
     if (a_words ^ b_words) & _HARD_DIFF:
         return True
@@ -50,7 +69,7 @@ def is_possible_duplicate(a, b):
     """True if two items look like the same part (used to warn when adding a new item)."""
     an, aw = _fingerprint(a)
     bn, bw = _fingerprint(b)
-    if an != bn or not aw or not bw or _conflict(aw, bw):
+    if an != bn or not aw or not bw or _conflict(aw, bw) or _different_make(a, b) or _different_size_in_desc(a, b):
         return False
     overlap = len(aw & bw) / len(aw | bw)
     return overlap >= (0.5 if an else 0.8)
@@ -75,7 +94,7 @@ def find_duplicate_groups(parts, dismissed=()):
                 continue
             if pair_key(a["part_id"], b["part_id"]) in dismissed:
                 continue
-            if not aw or not bw or _conflict(aw, bw):
+            if not aw or not bw or _conflict(aw, bw) or _different_make(a, b) or _different_size_in_desc(a, b):
                 continue
             overlap = len(aw & bw) / len(aw | bw)
             if overlap < 0.5:

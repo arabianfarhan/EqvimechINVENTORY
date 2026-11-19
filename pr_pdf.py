@@ -92,7 +92,10 @@ def build_pr_pdf(pr, lines, actions, printed_at, status_label, company_line):
             r.cell(str(i))
             r.cell(_t(l.get("part_id")))
             r.cell(_t(l.get("part_name")))
-            r.cell(_t(l.get("description") or ""))
+            desc = str(l.get("description") or "")
+            if l.get("make"):
+                desc = f"Make: {l['make']}" + (f" - {desc}" if desc else "")
+            r.cell(_t(desc))
             r.cell(str(l.get("qty_requested")), style=FontFace(emphasis="BOLD"))
             r.cell(_t(l.get("unit") or "Nos"))
             r.cell("" if l.get("stock_now") is None else str(int(l["stock_now"])))

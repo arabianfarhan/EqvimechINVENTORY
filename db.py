@@ -22,7 +22,7 @@ from psycopg2.extensions import TRANSACTION_STATUS_IDLE
 
 # Bump this whenever init_db() creates or changes tables. The app re-runs
 # schema setup when it changes, even if the server process was not restarted.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 ITEMS_SNAPSHOT_CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "items_master_live.csv")
 APP_TIMEZONE = "Asia/Kolkata"
@@ -324,6 +324,7 @@ def ensure_columns(conn):
             "min_level": "INTEGER DEFAULT 0",
             "reorder_qty": "INTEGER DEFAULT 0",
             "active": "INTEGER DEFAULT 1",
+            "make": "TEXT DEFAULT ''",
             "created_at": "TIMESTAMPTZ",
             "updated_at": "TIMESTAMPTZ",
             # pricing (visible to the Accounts login only)
@@ -468,7 +469,7 @@ def get_part(conn, part_id):
 def sync_parts_snapshot_csv(conn, active_only=False):
     c = conn.cursor()
     sql = (
-        "SELECT part_id, name, description, unit, quantity, location, min_level, reorder_qty, category, active "
+        "SELECT part_id, name, make, description, unit, quantity, location, min_level, reorder_qty, category, active "
         "FROM parts"
     )
     params = []
@@ -479,7 +480,7 @@ def sync_parts_snapshot_csv(conn, active_only=False):
     rows = c.fetchall()
 
     fieldnames = [
-        "item_code", "name", "description", "unit", "quantity",
+        "item_code", "name", "make", "description", "unit", "quantity",
         "location", "min_level", "reorder_qty", "category", "active",
     ]
     with open(ITEMS_SNAPSHOT_CSV_PATH, "w", newline="", encoding="utf-8") as csvfile:
@@ -491,6 +492,7 @@ def sync_parts_snapshot_csv(conn, active_only=False):
                 {
                     "item_code": row["part_id"],
                     "name": row["name"],
+                    "make": row.get("make") or "",
                     "description": row["description"],
                     "unit": row["unit"],
                     "quantity": row["quantity"],
@@ -507,15 +509,16 @@ def sync_parts_snapshot_csv(conn, active_only=False):
 def save_part(conn, part_data):
     payload = dict(part_data)
     payload["category"] = normalize_category(payload.get("category"))
+    payload["make"] = clean_make(payload.get("make"))
     c = conn.cursor()
     c.execute(
         """
         INSERT INTO parts (
-            part_id, name, description, unit, quantity, location, min_level, reorder_qty, category, active
-        ) VALUES (%(part_id)s, %(name)s, %(description)s, %(unit)s, %(quantity)s, %(location)s,
+            part_id, name, make, description, unit, quantity, location, min_level, reorder_qty, category, active
+        ) VALUES (%(part_id)s, %(name)s, %(make)s, %(description)s, %(unit)s, %(quantity)s, %(location)s,
                   %(min_level)s, %(reorder_qty)s, %(category)s, %(active)s)
         ON CONFLICT (part_id) DO UPDATE SET
-            name = EXCLUDED.name, description = EXCLUDED.description, unit = EXCLUDED.unit,
+            name = EXCLUDED.name, make = EXCLUDED.make, description = EXCLUDED.description, unit = EXCLUDED.unit,
             quantity = EXCLUDED.quantity, location = EXCLUDED.location, min_level = EXCLUDED.min_level,
             reorder_qty = EXCLUDED.reorder_qty, category = EXCLUDED.category, active = EXCLUDED.active,
             updated_at = NOW()
@@ -563,8 +566,13 @@ def _coerce_active_flag(value):
     return 1
 
 
+def clean_make(value):
+    """Brand / manufacturer, tidied: '  skf ' -> 'skf' (case kept as typed)."""
+    return " ".join(str(value or "").split())[:60]
+
+
 MASTER_EDITABLE_FIELDS = (
-    "part_id", "name", "description", "unit", "location",
+    "part_id", "name", "make", "description", "unit", "location",
     "min_level", "reorder_qty", "category", "active",
 )
 
@@ -579,6 +587,7 @@ def _clean_master_row(row, row_number):
     return {
         "part_id": part_id,
         "name": name,
+        "make": clean_make(row.get("make")),
         "description": str(row.get("description") or "").strip(),
         "unit": str(row.get("unit") or "Nos").strip() or "Nos",
         "quantity": _coerce_non_negative_int(row.get("quantity"), "Quantity", row_number),
@@ -661,7 +670,8 @@ def save_master_table(conn, rows, original_rows=None, performed_by="manager", pe
         has_original = "original_quantity" in payload
         edits.append({
             "id": payload["id"],
-            "part_id": payload["part_id"], "name": payload["name"], "description": payload["description"],
+            "part_id": payload["part_id"], "name": payload["name"], "make": payload["make"],
+            "description": payload["description"],
             "unit": payload["unit"], "quantity": payload["quantity"], "location": payload["location"],
             "min_level": payload["min_level"], "reorder_qty": payload["reorder_qty"],
             "category": payload["category"], "active": payload["active"],
@@ -751,6 +761,7 @@ BEGIN
             END IF;
             UPDATE parts SET
                 part_id = e->>'part_id', name = e->>'name', description = e->>'description',
+                make = COALESCE(e->>'make', make),
                 unit = e->>'unit', quantity = new_qty, location = e->>'location',
                 min_level = (e->>'min_level')::int, reorder_qty = (e->>'reorder_qty')::int,
                 category = e->>'category', active = (e->>'active')::int, updated_at = NOW()
@@ -775,9 +786,9 @@ BEGIN
             END IF;
             n_updated := n_updated + 1;
         ELSE
-            INSERT INTO parts (part_id, name, description, unit, quantity, location,
+            INSERT INTO parts (part_id, name, make, description, unit, quantity, location,
                                min_level, reorder_qty, category, active)
-            VALUES (e->>'part_id', e->>'name', e->>'description', e->>'unit', (e->>'quantity')::int,
+            VALUES (e->>'part_id', e->>'name', COALESCE(e->>'make', ''), e->>'description', e->>'unit', (e->>'quantity')::int,
                     e->>'location', (e->>'min_level')::int, (e->>'reorder_qty')::int,
                     e->>'category', (e->>'active')::int);
             IF (e->>'quantity')::int <> 0 THEN
@@ -1219,6 +1230,8 @@ def _normalize_part_payload(row):
     return {
         "part_id": part_key,
         "name": str(row.get("name", "")).strip(),
+        # None = the file has no make column -> keep what the app already has
+        "make": clean_make(row.get("make")) if "make" in row else None,
         "description": str(row.get("description", "")).strip(),
         "unit": str(row.get("unit", "Nos")).strip() or "Nos",
         "quantity": _coerce_non_negative_int(row.get("quantity"), "Quantity", "CSV"),
@@ -1234,6 +1247,7 @@ def _payload_from_existing_row(row):
     return {
         "part_id": str(row["part_id"] or "").strip(),
         "name": str(row["name"] or "").strip(),
+        "make": clean_make(row.get("make")),
         "description": str(row["description"] or "").strip(),
         "unit": str(row["unit"] or "Nos").strip() or "Nos",
         "quantity": int(row["quantity"] or 0),
@@ -1313,6 +1327,7 @@ def _part_matches_payload(existing, payload):
         and int(existing["min_level"] or 0) == payload["min_level"]
         and int(existing["reorder_qty"] or 0) == payload["reorder_qty"]
         and int(existing["active"] or 0) == payload["active"]
+        and (payload.get("make") is None or clean_make(existing.get("make")) == payload["make"])
         and (lambda e, p: (str(e["category"] or "").strip() if (hasattr(e, 'keys') and "category" in e.keys()) else "") == p.get("category", "").strip())(existing, payload)
     )
 
@@ -1330,6 +1345,8 @@ def _diff_part_fields(existing, payload):
         "reorder_qty": "reorder qty",
         "active": "active",
     }
+    if payload.get("make") is not None and clean_make(existing.get("make")) != payload["make"]:
+        changed.append("make")
     for field_name, label in field_labels.items():
         old_value = existing[field_name]
         new_value = payload[field_name]
@@ -1417,7 +1434,7 @@ def analyze_parts_import(conn, records):
     }
     seen_part_ids = set()
     _c = conn.cursor()
-    _c.execute("SELECT part_id, name, description, unit, quantity, location, min_level, reorder_qty, active, category FROM parts")
+    _c.execute("SELECT part_id, name, make, description, unit, quantity, location, min_level, reorder_qty, active, category FROM parts")
     existing_payloads = [
         _payload_from_existing_row(row)
         for row in _c.fetchall()
@@ -1541,7 +1558,7 @@ def import_parts_from_csv(conn, records, pre_analyzed_rows=None, performed_by="m
                 payload["active"] = _coerce_active_flag(payload.get("active", 1))
                 payload["category"] = normalize_category(payload.get("category"))
                 part_rows.append((
-                    payload["part_id"], payload["name"], payload["description"],
+                    payload["part_id"], payload["name"], payload.get("make"), payload["description"],
                     payload["unit"], payload["quantity"], payload["location"],
                     payload["min_level"], payload["reorder_qty"],
                     payload["category"], payload["active"],
@@ -1559,11 +1576,12 @@ def import_parts_from_csv(conn, records, pre_analyzed_rows=None, performed_by="m
                 c,
                 """
                 INSERT INTO parts (
-                    part_id, name, description, unit, quantity, location,
+                    part_id, name, make, description, unit, quantity, location,
                     min_level, reorder_qty, category, active
                 ) VALUES %s
                 ON CONFLICT (part_id) DO UPDATE SET
                     name        = EXCLUDED.name,
+                    make        = COALESCE(EXCLUDED.make, parts.make),
                     description = EXCLUDED.description,
                     unit        = EXCLUDED.unit,
                     quantity    = EXCLUDED.quantity,
@@ -2202,7 +2220,8 @@ def get_pr_detail(conn, pr_id):
         return None
     c.execute(
         """
-        SELECT l.*, p.quantity AS stock_now, COALESCE(p.description, '') AS description
+        SELECT l.*, p.quantity AS stock_now, COALESCE(p.description, '') AS description,
+               COALESCE(p.make, '') AS make
         FROM pr_lines l LEFT JOIN parts p ON p.part_id = l.part_id
         WHERE l.pr_id = %s ORDER BY l.id
         """,
@@ -2518,13 +2537,15 @@ def merge_parts(conn, keep_part_id, remove_part_ids, final_qty, actor, note=""):
         location = keep["location"] or next((rows[p]["location"] for p in remove_part_ids if rows[p]["location"]), "")
         min_level = max([int(keep["min_level"] or 0)] + [int(rows[p]["min_level"] or 0) for p in remove_part_ids])
         reorder = max([int(keep["reorder_qty"] or 0)] + [int(rows[p]["reorder_qty"] or 0) for p in remove_part_ids])
+        make = (keep.get("make") or "").strip() or next(
+            ((rows[p].get("make") or "").strip() for p in remove_part_ids if (rows[p].get("make") or "").strip()), "")
         c.execute(
             """
-            UPDATE parts SET quantity = %s, location = %s, min_level = %s, reorder_qty = %s, active = 1,
+            UPDATE parts SET quantity = %s, location = %s, min_level = %s, reorder_qty = %s, make = %s, active = 1,
                    updated_at = NOW()
             WHERE part_id = %s
             """,
-            (final_qty, location, min_level, reorder, keep_part_id),
+            (final_qty, location, min_level, reorder, make, keep_part_id),
         )
         if keep.get("rate") is None:
             donor = next((rows[p] for p in remove_part_ids if rows[p].get("rate") is not None), None)

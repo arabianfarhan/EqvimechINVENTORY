@@ -13,7 +13,7 @@ from functools import lru_cache
 
 # glued text like "10x16bolt" or "r25ballscrew" -> ["10x16", "bolt"] / ["r25", "ballscrew"]
 _SPLIT = re.compile(r"[a-z]{3,}|[a-z]{0,2}\d+(?:x\d+)*(?:[a-z]{1,2}(?![a-z]))?")
-SEARCH_FIELDS = ("name", "part_id", "description", "location", "category")
+SEARCH_FIELDS = ("name", "part_id", "make", "description", "location", "category")
 
 
 def compact(text):

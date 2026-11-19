@@ -299,6 +299,16 @@ def all_parts(conn):
     return _cached_parts(conn, data_version())
 
 
+def known_makes(conn):
+    """Makes already used, so everyone picks the same spelling (SKF, not skf / S.K.F)."""
+    seen = {}
+    for p in all_parts(conn):
+        m = " ".join(str(p.get("make") or "").split())
+        if m and m.lower() not in seen:
+            seen[m.lower()] = m
+    return sorted(seen.values(), key=str.lower)
+
+
 def active_parts(conn):
     return [p for p in all_parts(conn) if p.get("active")]
 
@@ -439,6 +449,7 @@ def import_preview_dataframe(preview):
                 "possible_duplicate": entry.get("duplicate_alert", ""),
                 "item_code": payload.get("part_id", ""),
                 "name": payload.get("name", ""),
+                "make": payload.get("make") or "",
                 "description": payload.get("description", ""),
                 "unit": payload.get("unit", ""),
                 "quantity": payload.get("quantity", ""),
@@ -1350,12 +1361,20 @@ def part_list_label(part):
             return None
 
     name = _get("name", 2) or str(_get("part_id", 1) or "")
+    make = str(_get("make", None) or "").strip()
+    if make and make.lower() not in str(name).lower():
+        name = f"{name} [{make}]"
     desc = (_get("description", 3) or "").strip()
     if len(desc) > 54:
         desc = desc[:51] + "..."
     if desc:
         return f"{name} | {desc}"
     return name
+
+
+def make_pill(part):
+    make = str(safe_part_field(part, "make", "") or "").strip()
+    return f'<span class="pill p-neutral"><b>Make: {esc(make)}</b></span>' if make else ""
 
 
 def safe_part_field(part, key, default=""):
@@ -1479,6 +1498,7 @@ def _show_item_details_dialog_body(conn):
             <div class="item-name-row"><span class="item-name">{esc(part['name'])}</span><span class="item-code-badge">{esc(part['part_id'])}</span></div>
             <div class="item-desc">{esc(part['description'])}</div>
             <div class="pill-row">
+                {make_pill(part)}
                 <span class="pill p-neutral">Location: {esc(part['location'])}</span>
                 <span class="pill p-neutral">Category: {esc(safe_part_field(part, 'category', 'Others'))}</span>
                 <span class="pill p-neutral">Unit: {esc(part['unit'])}</span>
@@ -1538,6 +1558,7 @@ def _show_pick_dialog_body(conn):
             <div class="item-name-row"><span class="item-name">{esc(part['name'])}</span><span class="item-code-badge">{esc(part['part_id'])}</span></div>
             <div class="item-desc">{esc(part['description'])}</div>
             <div class="pill-row">
+                {make_pill(part)}
                 <span class="pill p-neutral">Location: {esc(part['location'])}</span>
                 <span class="pill p-neutral">Category: {esc(safe_part_field(part, 'category', 'Others'))}</span>
                 {stock_pill(part['quantity'], part['min_level'])}
@@ -1724,6 +1745,7 @@ def _show_deposit_dialog_body(conn):
             <div class="item-name-row"><span class="item-name">{esc(part['name'])}</span><span class="item-code-badge">{esc(part['part_id'])}</span></div>
             <div class="item-desc">{esc(part['description'])}</div>
             <div class="pill-row">
+                {make_pill(part)}
                 <span class="pill p-neutral">Location: {esc(part['location'])}</span>
                 <span class="pill p-neutral">Category: {esc(safe_part_field(part, 'category', 'Others'))}</span>
                 <span class="pill p-neutral">Unit: {esc(part['unit'])}</span>
@@ -2141,7 +2163,7 @@ def deposit_stock_page(conn):
 
 # ── Item Master ─────────────────────────────────────────────────────────────
 MASTER_EDIT_COLUMNS = [
-    "id", "part_id", "name", "quantity", "unit", "location", "category",
+    "id", "part_id", "name", "make", "quantity", "unit", "location", "category",
     "min_level", "reorder_qty", "description", "active",
 ]
 
@@ -2160,6 +2182,7 @@ def master_dataframe(parts, query, category, show_inactive):
                 "id": int(p["id"]),
                 "part_id": str(p.get("part_id") or "").strip(),
                 "name": str(p.get("name") or "").strip(),
+                "make": str(p.get("make") or "").strip(),
                 "quantity": int(p.get("quantity") or 0),
                 "unit": str(p.get("unit") or "Nos").strip() or "Nos",
                 "location": str(p.get("location") or "").strip(),
@@ -2264,6 +2287,7 @@ def _master_table(conn):
         column_config={
             "part_id": st.column_config.TextColumn("Item Code", width="medium"),
             "name": st.column_config.TextColumn("Name", width="medium"),
+            "make": st.column_config.TextColumn("Make", width="small", help="Brand / manufacturer, e.g. SKF, TVS, Hiwin"),
             "quantity": st.column_config.NumberColumn(
                 "Qty", min_value=0, step=1, format="%d", width="small", default=0,
                 help="Stock corrections are recorded in History. Use Inward for received goods.",
@@ -2408,7 +2432,10 @@ def _add_item_form(conn):
         c1, c2 = st.columns(2)
         code = c1.text_input("Item code *", placeholder="e.g. BS-R25-890")
         name = c2.text_input("Item name *", placeholder="e.g. Ballscrew R25")
-        description = st.text_input("Description / specification", placeholder="Make, size, model…")
+        m1, m2 = st.columns([1, 2])
+        make = m1.selectbox("Make", known_makes(conn), index=None, accept_new_options=True,
+                            placeholder="Pick or type brand", key="add_item_make")
+        description = m2.text_input("Description / specification", placeholder="Size, model…")
         c3, c4, c5 = st.columns(3)
         quantity = c3.number_input("Opening stock", min_value=0, step=1, value=0)
         unit = c4.text_input("Unit", value="Nos")
@@ -2431,7 +2458,7 @@ def _add_item_form(conn):
             st.error(f"Item code '{code}' already exists ({existing['name']}). Use a different code.")
             return
         similar = [p for p in all_parts(conn)
-                   if p.get("active") and is_possible_duplicate({"part_id": code, "name": name}, p)]
+                   if p.get("active") and is_possible_duplicate({"part_id": code, "name": name, "make": make or ""}, p)]
         if similar and st.session_state.get("im_add_confirm") != (code, name):
             st.session_state["im_add_confirm"] = (code, name)
             st.warning(
@@ -2445,7 +2472,7 @@ def _add_item_form(conn):
             save_master_table(
                 conn,
                 [{
-                    "id": None, "part_id": code, "name": name, "description": description,
+                    "id": None, "part_id": code, "name": name, "make": make or "", "description": description,
                     "unit": unit or "Nos", "quantity": int(quantity), "location": location,
                     "min_level": int(min_level), "reorder_qty": int(reorder_qty),
                     "category": category, "active": True,
@@ -2494,7 +2521,14 @@ def _edit_item_form(conn):
         c1, c2 = st.columns(2)
         new_code = c1.text_input("Item code *", value=part["part_id"])
         name = c2.text_input("Item name *", value=part["name"] or "")
-        description = st.text_input("Description / specification", value=part["description"] or "")
+        m1, m2 = st.columns([1, 2])
+        makes = known_makes(conn)
+        make_now = (part.get("make") or "").strip()
+        if make_now and make_now not in makes:
+            makes = [make_now] + makes
+        make = m1.selectbox("Make", makes, index=makes.index(make_now) if make_now else None,
+                            accept_new_options=True, placeholder="Pick or type brand")
+        description = m2.text_input("Description / specification", value=part["description"] or "")
         c3, c4, c5 = st.columns(3)
         quantity = c3.number_input("Stock qty", min_value=0, step=1, value=int(part["quantity"] or 0),
                                    help="Changing this records a stock correction in History.")
@@ -2507,9 +2541,9 @@ def _edit_item_form(conn):
         active = st.checkbox("Active (can be issued)", value=bool(part["active"]))
         saved = st.form_submit_button("💾  Save changes", type="primary", width="stretch")
     if saved:
-        original = {k: part[k] for k in ("id", "part_id", "name", "description", "unit", "quantity", "location",
-                                         "min_level", "reorder_qty", "category", "active")}
-        edited = dict(original, part_id=new_code.strip(), name=name.strip(), description=description,
+        original = {k: part.get(k) for k in ("id", "part_id", "name", "make", "description", "unit", "quantity",
+                                             "location", "min_level", "reorder_qty", "category", "active")}
+        edited = dict(original, part_id=new_code.strip(), name=name.strip(), make=make or "", description=description,
                       unit=unit or "Nos", quantity=int(quantity), location=location, min_level=int(min_level),
                       reorder_qty=int(reorder_qty), category=category, active=active)
         try:
@@ -2538,79 +2572,99 @@ def _duplicate_groups(conn):
     return find_duplicate_groups(all_parts(conn), _cached_dismissed(conn, data_version()))
 
 
+def _merge_card(conn, items, heading, why, by_name, gkey, allow_dismiss=True):
+    """One merge panel: table of the items, which to keep, real stock, Merge / Not duplicates."""
+    codes = [p["part_id"] for p in items]
+    with st.container(border=True):
+        st.markdown(f"{heading} <span class='res-code'>{esc(why)}</span>", unsafe_allow_html=True)
+        st.dataframe(
+            pd.DataFrame([{
+                "Item code": p["part_id"], "Name": p["name"], "Make": p.get("make") or "",
+                "Stock": int(p.get("quantity") or 0), "Unit": p.get("unit"), "Location": p.get("location") or "",
+                "Category": normalize_category(p.get("category")), "Description": p.get("description") or "",
+            } for p in items]),
+            hide_index=True, width="stretch",
+        )
+        c1, c2 = st.columns([0.6, 0.4])
+        keep = c1.radio(
+            "Keep this item", codes, key=f"dup_keep_{gkey}",
+            format_func=lambda c, items=items: next(f"{p['name']}  ·  {c}" for p in items if p["part_id"] == c),
+        )
+        qtys = [int(p.get("quantity") or 0) for p in items]
+        same = len(set(qtys)) == 1
+        final_qty = c2.number_input(
+            "Real stock after merge *", min_value=0, step=1,
+            value=qtys[codes.index(keep)], key=f"dup_qty_{gkey}_{keep}",
+            help="Count the shelf. If both entries are the same physical stock, enter it once — "
+                 "don't add them together.",
+        )
+        c2.caption(
+            "Same count on both — probably the same stock entered twice."
+            if same else f"Counts differ: {' / '.join(str(q) for q in qtys)}. Check the shelf."
+        )
+        b1, b2 = st.columns(2)
+        if b1.button("Merge into kept item", key=f"dup_merge_{gkey}", type="primary",
+                     icon=":material/merge:", width="stretch"):
+            try:
+                merge_parts(conn, keep, [c for c in codes if c != keep], int(final_qty), by_name,
+                            f"Duplicate cleanup ({why})")
+            except ValueError as exc:
+                st.error(str(exc))
+            else:
+                bump_data_version()
+                st.session_state["dup_open"] = True
+                st.session_state.pop("dup_manual_pick", None)
+                st.session_state["dup_notice"] = (
+                    f"✅ Merged into {keep}. Stock is now {int(final_qty)}; history moved over.")
+                st.rerun()
+        if allow_dismiss and b2.button("Not duplicates", key=f"dup_dismiss_{gkey}", icon=":material/close:",
+                                       width="stretch"):
+            for i in range(len(codes)):
+                for j in range(i + 1, len(codes)):
+                    dismiss_duplicate(conn, codes[i], codes[j], by_name or st.session_state.get("user", ""))
+            bump_data_version()
+            st.session_state["dup_open"] = True
+            st.session_state["dup_notice"] = "Marked as different items — they won't be suggested again."
+            st.rerun()
+
+
 def duplicates_section(conn, groups):
     label = f"🧹  Duplicate items ({len(groups)} found)" if groups else "🧹  Duplicate items"
     with st.expander(label, expanded=bool(st.session_state.get("dup_open"))):
         notice = st.session_state.pop("dup_notice", None)
         if notice:
             st.success(notice)
+        st.caption(
+            "Pick the one to **keep**, count the real stock, and merge. All history, PRs and requests move "
+            "to the kept item; the duplicate is switched off (not deleted) and the merge is logged."
+        )
+        by_name = st.text_input("Your name *", key="dup_actor", placeholder="Saved with each merge as proof")
+
+        # duplicates spotted by people (names too different for the automatic finder)
+        st.markdown("**Merge items you found yourself**")
+        parts = [p for p in all_parts(conn) if p.get("active")]
+        by_code = {p["part_id"]: p for p in parts}
+        picked = st.multiselect(
+            "Pick the 2 or more items that are really the same part", sorted(by_code, key=lambda c: str(
+                by_code[c].get("name") or "").lower()),
+            key="dup_manual_pick", placeholder="Type to search items…", max_selections=6,
+            format_func=lambda c: f"{part_list_label(by_code[c])}  ·  {c}  ·  stock {int(by_code[c].get('quantity') or 0)}",
+        )
+        if len(picked) >= 2:
+            _merge_card(conn, [by_code[c] for c in picked], "**✋ Your pick**", "picked by hand", by_name,
+                        gkey="manual_" + str(abs(hash(tuple(sorted(picked)))) % 10**8), allow_dismiss=False)
+
+        st.markdown("**Suggested by the app**")
         if not groups:
             st.success("No likely duplicates found.")
         else:
-            st.caption(
-                "These items look like the same part entered twice (same size, very similar name). "
-                "Pick the one to **keep**, count the real stock, and merge. All history, PRs and requests move "
-                "to the kept item; the duplicate is switched off (not deleted) and the merge is logged."
-            )
-            by_name = st.text_input("Your name *", key="dup_actor", placeholder="Saved with each merge as proof")
-            for gi, g in enumerate(groups[:25]):
-                items = g["items"]
-                codes = [p["part_id"] for p in items]
-                gkey = abs(hash(tuple(sorted(codes)))) % 10**8
-                with st.container(border=True):
-                    st.markdown(
-                        f"**{'🔴 Very likely' if g['confidence'] == 'High' else '🟠 Possible'} duplicate** "
-                        f"<span class='res-code'>{esc(g['why'])}</span>",
-                        unsafe_allow_html=True,
-                    )
-                    st.dataframe(
-                        pd.DataFrame([{
-                            "Item code": p["part_id"], "Name": p["name"], "Stock": int(p.get("quantity") or 0),
-                            "Unit": p.get("unit"), "Location": p.get("location") or "",
-                            "Category": normalize_category(p.get("category")),
-                            "Description": p.get("description") or "",
-                        } for p in items]),
-                        hide_index=True, width="stretch",
-                    )
-                    c1, c2 = st.columns([0.6, 0.4])
-                    keep = c1.radio(
-                        "Keep this item", codes, key=f"dup_keep_{gkey}",
-                        format_func=lambda c, items=items: next(f"{p['name']}  ·  {c}" for p in items if p["part_id"] == c),
-                    )
-                    qtys = [int(p.get("quantity") or 0) for p in items]
-                    same = len(set(qtys)) == 1
-                    final_qty = c2.number_input(
-                        "Real stock after merge *", min_value=0, step=1,
-                        value=qtys[codes.index(keep)], key=f"dup_qty_{gkey}_{keep}",
-                        help="Count the shelf. If both entries are the same physical stock, enter it once — "
-                             "don't add them together.",
-                    )
-                    c2.caption(
-                        "Same count on both — probably the same stock entered twice."
-                        if same else f"Counts differ: {' / '.join(str(q) for q in qtys)}. Check the shelf."
-                    )
-                    b1, b2 = st.columns(2)
-                    if b1.button("Merge into kept item", key=f"dup_merge_{gkey}", type="primary",
-                                 icon=":material/merge:", width="stretch"):
-                        try:
-                            merge_parts(conn, keep, [c for c in codes if c != keep], int(final_qty), by_name,
-                                        f"Duplicate cleanup ({g['why']})")
-                        except ValueError as exc:
-                            st.error(str(exc))
-                        else:
-                            bump_data_version()
-                            st.session_state["dup_open"] = True
-                            st.session_state["dup_notice"] = (
-                                f"✅ Merged into {keep}. Stock is now {int(final_qty)}; history moved over.")
-                            st.rerun()
-                    if b2.button("Not duplicates", key=f"dup_dismiss_{gkey}", icon=":material/close:", width="stretch"):
-                        for i in range(len(codes)):
-                            for j in range(i + 1, len(codes)):
-                                dismiss_duplicate(conn, codes[i], codes[j], by_name or st.session_state.get("user", ""))
-                        bump_data_version()
-                        st.session_state["dup_open"] = True
-                        st.session_state["dup_notice"] = "Marked as different items — they won't be suggested again."
-                        st.rerun()
+            for g in groups[:25]:
+                codes = [p["part_id"] for p in g["items"]]
+                _merge_card(
+                    conn, g["items"],
+                    f"**{'🔴 Very likely' if g['confidence'] == 'High' else '🟠 Possible'} duplicate**",
+                    g["why"], by_name, gkey=abs(hash(tuple(sorted(codes)))) % 10**8,
+                )
             if len(groups) > 25:
                 st.caption(f"Showing 25 of {len(groups)}. Merge these and the rest will appear.")
 
@@ -2659,7 +2713,7 @@ def item_master_page(conn):
             if parts:
                 exp_df = pd.DataFrame(parts).drop(columns=["id", "created_at", "updated_at"], errors="ignore")
                 exp_df = exp_df.rename(columns={"part_id": "item_code"})
-                ordered = [c for c in ["item_code", "name", "description", "unit", "quantity", "location",
+                ordered = [c for c in ["item_code", "name", "make", "description", "unit", "quantity", "location",
                                         "min_level", "reorder_qty", "category", "active"] if c in exp_df.columns]
                 st.download_button(
                     "⬇ Export all items",
