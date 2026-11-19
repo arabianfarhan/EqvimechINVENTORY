@@ -23,6 +23,7 @@ streamlit run app.py
 ## Access
 
 - **Accounts** - unlocked with `ACCOUNTS_PASSWORD` (default 0909): sets item prices one by one
+- **Edit PR** - inside a PR, "✏️ Edit PR" (password `PR_EDIT_PASSWORD`, default 0001) swaps a wrong item, changes quantities, removes or adds lines; each change is kept in the PR record
   (every change logged with name and time) and sees the total stock value by category, with
   an Excel export. Prices are not shown to User or Manager.
 

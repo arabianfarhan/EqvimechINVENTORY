@@ -2028,6 +2028,126 @@ def update_pr_expected_date(conn, pr_id, actor, new_date, reason):
 
 
 @transactional
+def edit_pr_lines(conn, pr_id, actor, reason, new_lines):
+    """Correct the items on an open PR.
+
+    new_lines = [{"line_id": id or None, "part_id": ..., "qty": ...}, ...] - the full list as it should be.
+    Lines left out are removed. A line that already has goods received can't be removed or switched to
+    another item, and its quantity can't go below what was received. Every change goes into the PR's
+    permanent record.
+    """
+    actor = _clean_name(actor, "Your name")
+    reason = str(reason or "").strip()
+    if len(reason) < 3:
+        raise ValueError("Give the reason for the change (e.g. wrong item added by mistake).")
+    c = conn.cursor()
+    try:
+        pr = _lock_pr(c, pr_id)
+        if pr["status"] not in PR_OPEN_STATUSES:
+            raise ValueError(f"{pr['pr_no']} is {PR_STATUS_LABELS.get(pr['status'], pr['status'])} — it can't be edited.")
+        c.execute("SELECT * FROM pr_lines WHERE pr_id = %s ORDER BY id FOR UPDATE", (pr_id,))
+        old = {r["id"]: r for r in c.fetchall()}
+
+        wanted, seen_parts = [], {}
+        for raw in new_lines or []:
+            pid = str(raw.get("part_id") or "").strip()
+            qty = int(raw.get("qty") or 0)
+            lid = raw.get("line_id")
+            lid = int(lid) if lid not in (None, "") else None
+            if not pid or qty <= 0:
+                continue
+            if lid is not None and lid not in old:
+                raise ValueError("A line on this PR has changed — close and reopen the PR, then try again.")
+            if pid in seen_parts:
+                raise ValueError("The same item is listed twice — keep it once and change the quantity.")
+            seen_parts[pid] = True
+            wanted.append((lid, pid, qty))
+        if not wanted:
+            raise ValueError("A PR needs at least one item. To drop the whole PR use Close / cancel.")
+
+        c.execute("SELECT * FROM parts WHERE part_id = ANY(%s)", (list(seen_parts),))
+        parts = {r["part_id"]: r for r in c.fetchall()}
+        missing = [pid for pid in seen_parts if pid not in parts]
+        if missing:
+            raise ValueError(f"Item not found: {', '.join(missing)}")
+
+        changes = []
+        kept = set()
+        for lid, pid, qty in wanted:
+            p = parts[pid]
+            if lid is None:
+                c.execute(
+                    """
+                    INSERT INTO pr_lines (pr_id, part_id, part_name, unit, qty_requested,
+                                          stock_at_request, min_level_at_request)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (pr_id, pid, p["name"], p["unit"], qty, int(p["quantity"] or 0), int(p["min_level"] or 0)),
+                )
+                changes.append(f"Added {p['name']} × {qty}")
+                continue
+            kept.add(lid)
+            line = old[lid]
+            got = int(line["qty_received"] or 0)
+            if pid != line["part_id"]:
+                if got:
+                    raise ValueError(f"{line['part_name']}: {got} already received — it can't be swapped for another "
+                                     "item. Reduce its quantity instead and add the new item.")
+                c.execute(
+                    """
+                    UPDATE pr_lines SET part_id = %s, part_name = %s, unit = %s, qty_requested = %s, rate = NULL,
+                           stock_at_request = %s, min_level_at_request = %s
+                    WHERE id = %s
+                    """,
+                    (pid, p["name"], p["unit"], qty, int(p["quantity"] or 0), int(p["min_level"] or 0), lid),
+                )
+                changes.append(f"Replaced {line['part_name']} × {line['qty_requested']} with {p['name']} × {qty}")
+            elif qty != line["qty_requested"]:
+                if qty < got:
+                    raise ValueError(f"{line['part_name']}: {got} already received — quantity can't be less than that.")
+                c.execute("UPDATE pr_lines SET qty_requested = %s WHERE id = %s", (qty, lid))
+                changes.append(f"{line['part_name']} qty {line['qty_requested']} → {qty}")
+        for lid, line in old.items():
+            if lid in kept:
+                continue
+            if int(line["qty_received"] or 0):
+                raise ValueError(f"{line['part_name']}: goods already received — it can't be removed. "
+                                 "Reduce its quantity to what was received instead.")
+            c.execute("DELETE FROM pr_lines WHERE id = %s", (lid,))
+            changes.append(f"Removed {line['part_name']} × {line['qty_requested']}")
+        if not changes:
+            raise ValueError("Nothing was changed.")
+
+        # receiving may now be complete (e.g. the only pending line was reduced)
+        c.execute("SELECT qty_requested, qty_received FROM pr_lines WHERE pr_id = %s", (pr_id,))
+        rows = c.fetchall()
+        any_got = any(r["qty_received"] for r in rows)
+        all_done = any_got and all(r["qty_received"] >= r["qty_requested"] for r in rows)
+        status = pr["status"]
+        if all_done:
+            status = "received"
+        elif status == "received":
+            status = "partial"
+        c.execute(
+            """
+            UPDATE purchase_requisitions SET status = %s, updated_at = NOW(),
+                received_at = CASE WHEN %s THEN NOW() ELSE received_at END,
+                closed_at = CASE WHEN %s THEN NOW() ELSE closed_at END,
+                closed_by = CASE WHEN %s THEN %s ELSE closed_by END
+            WHERE id = %s
+            """,
+            (status, all_done, all_done, all_done, actor, pr_id),
+        )
+        _pr_event(c, pr_id, "edited", actor, "; ".join(changes) + f" · Reason: {reason}"
+                  + (" · PR complete" if all_done else ""))
+        conn.commit()
+        return changes
+    except Exception:
+        conn.rollback()
+        raise
+
+
+@transactional
 def add_pr_note(conn, pr_id, actor, note):
     actor = _clean_name(actor, "Your name")
     note = str(note or "").strip()

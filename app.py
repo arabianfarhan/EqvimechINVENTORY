@@ -99,6 +99,7 @@ from db import (
     mark_pr_ordered,
     on_order_map,
     find_similar_inwards,
+    edit_pr_lines,
     receive_pr,
     save_vendor,
     update_pr_expected_date,
@@ -149,6 +150,14 @@ def check_accounts_password(password):
 def check_manager_password(password):
     expected = _secret("MANAGER_PASSWORD", _LEGACY_MANAGER_PASSWORD)
     return hmac.compare_digest(str(password or ""), expected)
+
+
+_DEFAULT_PR_EDIT_PASSWORD = "0001"
+
+
+def check_pr_edit_password(password):
+    expected = _secret("PR_EDIT_PASSWORD", _DEFAULT_PR_EDIT_PASSWORD)
+    return hmac.compare_digest(str(password or "").strip(), expected)
 
 
 def esc(value):
@@ -3444,6 +3453,94 @@ def _pr_new_view(conn):
     pr_builder_fragment()
 
 
+def _pr_edit_panel(conn, pr, lines):
+    """Password-protected correction of a PR's items. Returns (error, done_msg)."""
+    pr_id = pr["id"]
+    if not st.session_state.get("pr_edit_unlocked"):
+        with st.form(f"pr_edit_pw_{pr_id}", border=True):
+            st.caption("Editing a PR needs the PR edit password.")
+            pw = st.text_input("PR edit password", type="password")
+            if st.form_submit_button("🔓 Unlock editing", type="primary", width="stretch"):
+                if check_pr_edit_password(pw):
+                    st.session_state["pr_edit_unlocked"] = True
+                    st.rerun(scope="fragment")
+                return "Wrong password.", None
+        return None, None
+
+    state_key = f"pr_edit_rows_{pr_id}"
+    rows = st.session_state.get(state_key)
+    if rows is None:
+        rows = [{"uid": l["id"], "line_id": l["id"], "part_id": l["part_id"], "qty": int(l["qty_requested"]),
+                 "received": int(l["qty_received"] or 0)} for l in lines]
+        st.session_state[state_key] = rows
+        st.session_state[f"{state_key}_n"] = 0
+
+    parts = all_parts(conn)
+    by_id = {p["part_id"]: p for p in parts}
+    options = [p["part_id"] for p in parts if p.get("active")]
+    for r in rows:  # an item made inactive later must still show on its line
+        if r["part_id"] not in by_id or r["part_id"] not in options:
+            options.append(r["part_id"])
+
+    def label(pid):
+        p = by_id.get(pid)
+        if not p:
+            return pid
+        return f"{p['name']} · {pid} · stock {int(p.get('quantity') or 0)}" if p["name"] != pid else \
+            f"{pid} · stock {int(p.get('quantity') or 0)}"
+
+    with st.container(border=True):
+        st.caption("Change an item (tap its name and search), change a quantity, remove a line with 🗑 or add an item. "
+                   "Lines that already have goods received can only have their quantity raised.")
+        remove = None
+        for i, r in enumerate(rows):
+            c1, c2, c3 = st.columns([6, 2, 1], vertical_alignment="bottom")
+            locked = r["received"] > 0
+            r["part_id"] = c1.selectbox(
+                f"Item {i + 1}" + (f" — {r['received']} received" if locked else ""), options,
+                index=options.index(r["part_id"]), format_func=label, disabled=locked,
+                key=f"pr_edit_part_{pr_id}_{r['uid']}",
+            )
+            unit = (by_id.get(r["part_id"]) or {}).get("unit") or "Nos"
+            r["qty"] = int(c2.number_input(f"Qty ({unit})", min_value=max(1, r["received"]), step=1,
+                                           value=max(int(r["qty"]), 1, r["received"]),
+                                           key=f"pr_edit_qty_{pr_id}_{r['uid']}"))
+            if c3.button("🗑", key=f"pr_edit_del_{pr_id}_{r['uid']}", disabled=locked or len(rows) == 1,
+                         help="Remove this line", width="stretch"):
+                remove = i
+        if remove is not None:
+            rows.pop(remove)
+            st.rerun(scope="fragment")
+
+        add_key = f"pr_edit_add_{pr_id}_{st.session_state.get(f'{state_key}_n', 0)}"
+        new_pid = st.selectbox("➕ Add an item", [o for o in options if o not in {r['part_id'] for r in rows}],
+                               index=None, format_func=label, placeholder="Search item to add…", key=add_key)
+        if new_pid:
+            n = st.session_state.get(f"{state_key}_n", 0) + 1
+            st.session_state[f"{state_key}_n"] = n
+            rows.append({"uid": f"new{n}", "line_id": None, "part_id": new_pid, "qty": 1, "received": 0})
+            st.rerun(scope="fragment")
+
+        c1, c2 = st.columns(2)
+        by = c1.text_input("Your name *", key=f"pr_edit_by_{pr_id}")
+        why = c2.text_input("Reason for change *", placeholder="e.g. wrong item added by mistake",
+                            key=f"pr_edit_why_{pr_id}")
+        s1, s2 = st.columns(2)
+        if s2.button("Discard changes", key=f"pr_edit_reset_{pr_id}", type="secondary", width="stretch"):
+            for k in [k for k in st.session_state if str(k).startswith((f"pr_edit_part_{pr_id}_", f"pr_edit_qty_{pr_id}_"))]:
+                del st.session_state[k]
+            st.session_state.pop(state_key, None)
+            st.rerun(scope="fragment")
+        if s1.button("💾 Save PR changes", key=f"pr_edit_save_{pr_id}", type="primary", width="stretch"):
+            try:
+                changes = edit_pr_lines(conn, pr_id, by, why, rows)
+            except ValueError as exc:
+                return str(exc), None
+            st.session_state.pop(state_key, None)
+            return None, "PR updated — " + "; ".join(changes)
+    return None, None
+
+
 # ── PR detail dialog ───────────────────────────────────────────────────────
 EVENT_LABELS = {
     "raised": "🧾 Raised",
@@ -3451,6 +3548,7 @@ EVENT_LABELS = {
     "received": "📥 Received",
     "date_changed": "📅 Date changed",
     "note": "📝 Note",
+    "edited": "✏️ Edited",
     "closed_short": "⏹ Closed short",
     "cancelled": "✖ Cancelled",
 }
@@ -3556,6 +3654,8 @@ def pr_print_html(detail):
 
 def _close_pr_dialog():
     st.session_state.pop("pr_dialog_id", None)
+    for k in [k for k in st.session_state if str(k).startswith("pr_edit_rows_")]:
+        del st.session_state[k]
 
 
 @st.dialog("Purchase requisition", width="large", on_dismiss=_close_pr_dialog)
@@ -3618,7 +3718,7 @@ def _pr_dialog_body(conn):
         actions.append("📅 Change expected date")
     actions += ["📝 Add note"]
     if is_open:
-        actions.append("⏹ Close / cancel")
+        actions += ["✏️ Edit PR", "⏹ Close / cancel"]
 
     action = st.segmented_control("Action", actions, key=f"pr_action_{pr_id}", label_visibility="collapsed")
     error = None
@@ -3725,6 +3825,8 @@ def _pr_dialog_body(conn):
                     done_msg = "Note added."
                 except ValueError as exc:
                     error = str(exc)
+    elif action == "✏️ Edit PR":
+        error, done_msg = _pr_edit_panel(conn, pr, lines)
     elif action == "⏹ Close / cancel":
         received_any = any(l["qty_received"] for l in lines)
         with st.form(f"pr_close_{pr_id}", border=True):
@@ -3746,7 +3848,7 @@ def _pr_dialog_body(conn):
     if done_msg:
         bump_data_version()
         st.session_state.pop(f"pr_action_{pr_id}", None)
-        st.session_state.pop("pr_dialog_id", None)
+        _close_pr_dialog()
         st.session_state["pr_notice"] = f"✅ {pr['pr_no']}: {done_msg}"
         st.session_state["pr_share_id"] = pr_id
         st.rerun()
@@ -3774,7 +3876,7 @@ def _pr_dialog_body(conn):
         help="A4 PDF, black & white — ready to print, email or WhatsApp.",
     )
     if c2.button("Close", key=f"pr_close_dialog_{pr_id}", type="secondary", width="stretch"):
-        st.session_state.pop("pr_dialog_id", None)
+        _close_pr_dialog()
         st.rerun()
 
 
