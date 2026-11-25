@@ -4442,7 +4442,8 @@ def stock_value_page(conn):
             st.rerun()
 
     rows = [{
-        "Item code": p["part_id"], "Name": p["name"], "Category": normalize_category(p.get("category")),
+        "Item code": p["part_id"], "Name": p["name"], "Make": (p.get("make") or "").strip(),
+        "Description": (p.get("description") or "").strip(), "Category": normalize_category(p.get("category")),
         "Stock": int(p.get("quantity") or 0), "Unit": p.get("unit") or "Nos",
         "Price / unit ₹": _rate(p), "Value ₹": (int(p.get("quantity") or 0) * _rate(p)) if _rate(p) is not None else None,
         "Price set by": p.get("rate_updated_by") or "", "Price updated": fmt_ist(p.get("rate_updated_at")),
@@ -4475,7 +4476,8 @@ def stock_value_page(conn):
 
     st.markdown('<div class="section-label">Full stock valuation</div>', unsafe_allow_html=True)
     q = (live_search_input("Search", "Item, code, category…", "acc_value_search") or "").strip()
-    view = df if not q else df[[row_matches([r["Item code"], r["Name"], r["Category"]], q) for r in rows]]
+    view = df if not q else df[[row_matches([r["Item code"], r["Name"], r["Make"], r["Description"], r["Category"]], q)
+                                for r in rows]]
     st.dataframe(view, hide_index=True, width="stretch", height=420, column_config={
         "Price / unit ₹": st.column_config.NumberColumn(format="₹ %.2f"),
         "Value ₹": st.column_config.NumberColumn(format="₹ %.2f"),
