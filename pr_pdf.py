@@ -74,35 +74,51 @@ def build_pr_pdf(pr, lines, actions, printed_at, status_label, company_line):
 
     # ── items ──
     has_rate = any(l.get("rate") is not None for l in lines)
-    heads = ["#", "Item code", "Name", "Description", "Order qty", "Unit", "Stock now", "Recd", "Pending"]
-    widths = [7, 32, 34, 43, 14, 11, 14, 11, 17]
+    has_comment = any(str(l.get("comment") or "").strip() for l in lines)
+    # Received / Pending only mean something once goods have started arriving
+    has_receipt = any(int(l.get("qty_received") or 0) for l in lines)
+
+    # (heading, fixed width in mm or None = shares the free space by weight, right-aligned?)
+    cols = [("#", 7, False), ("Item code", None, False), ("Name", None, False), ("Description", None, False),
+            ("Order qty", 14, True), ("Unit", 11, False), ("Stock now", 14, True)]
+    if has_receipt:
+        cols += [("Recd", 11, True), ("Pending", 15, True)]
     if has_rate:
-        heads.append("Rate")
-        widths = [7, 28, 30, 36, 13, 10, 13, 10, 17, 22]
+        cols.append(("Rate", 20, True))
+    if has_comment:
+        cols.append(("Comments", None, False))
+    weight = {"Item code": 0.9, "Name": 1.0, "Description": 1.25, "Comments": 1.1}
+    free = (pdf.w - pdf.l_margin - pdf.r_margin) - sum(w for _, w, _ in cols if w)
+    total_weight = sum(weight[h] for h, w, _ in cols if not w)
+    widths = [w if w else free * weight[h] / total_weight for h, w, _ in cols]
+    heads = [h for h, _, _ in cols]
+
     heading = FontFace(emphasis="BOLD", fill_color=(225, 225, 225))
     pdf.set_font("Helvetica", "", 8.5)
-    num_cols = {4, 6, 7, 8, 9}
     with pdf.table(col_widths=widths, line_height=4.6, headings_style=heading, padding=1.1,
-                   text_align=tuple("RIGHT" if i in num_cols else "LEFT" for i in range(len(heads)))) as t:
+                   text_align=tuple("RIGHT" if right else "LEFT" for _, _, right in cols)) as t:
         h = t.row()
         for x in heads:
             h.cell(x)
         for i, l in enumerate(lines, start=1):
-            r = t.row()
-            r.cell(str(i))
-            r.cell(_t(l.get("part_id")))
-            r.cell(_t(l.get("part_name")))
             desc = str(l.get("description") or "")
             if l.get("make"):
                 desc = f"Make: {l['make']}" + (f" - {desc}" if desc else "")
-            r.cell(_t(desc))
-            r.cell(str(l.get("qty_requested")), style=FontFace(emphasis="BOLD"))
-            r.cell(_t(l.get("unit") or "Nos"))
-            r.cell("" if l.get("stock_now") is None else str(int(l["stock_now"])))
-            r.cell(str(l.get("qty_received") or 0))
-            r.cell(str(int(l.get("qty_requested") or 0) - int(l.get("qty_received") or 0)))
-            if has_rate:
-                r.cell("" if l.get("rate") is None else f"{float(l['rate']):,.2f}")
+            got = int(l.get("qty_received") or 0)
+            value = {
+                "#": str(i), "Item code": _t(l.get("part_id")), "Name": _t(l.get("part_name")), "Description": _t(desc),
+                "Unit": _t(l.get("unit") or "Nos"),
+                "Stock now": "" if l.get("stock_now") is None else str(int(l["stock_now"])),
+                "Recd": str(got), "Pending": str(int(l.get("qty_requested") or 0) - got),
+                "Rate": "" if l.get("rate") is None else f"{float(l['rate']):,.2f}",
+                "Comments": _t(l.get("comment") or ""),
+            }
+            r = t.row()
+            for head in heads:
+                if head == "Order qty":
+                    r.cell(str(l.get("qty_requested")), style=FontFace(emphasis="BOLD"))
+                else:
+                    r.cell(value[head])
     pdf.ln(4)
 
     # ── action history ──

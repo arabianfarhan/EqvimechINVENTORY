@@ -22,7 +22,7 @@ from psycopg2.extensions import TRANSACTION_STATUS_IDLE
 
 # Bump this whenever init_db() creates or changes tables. The app re-runs
 # schema setup when it changes, even if the server process was not restarted.
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 ITEMS_SNAPSHOT_CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "items_master_live.csv")
 APP_TIMEZONE = "Asia/Kolkata"
@@ -1751,6 +1751,7 @@ CREATE TABLE IF NOT EXISTS price_changes (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_price_changes_part ON price_changes(part_id);
+ALTER TABLE pr_lines ADD COLUMN IF NOT EXISTS comment TEXT DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_pr_lines_pr ON pr_lines(pr_id);
 CREATE INDEX IF NOT EXISTS idx_pr_lines_part ON pr_lines(part_id);
 CREATE INDEX IF NOT EXISTS idx_pr_events_pr ON pr_events(pr_id);
@@ -1817,18 +1818,21 @@ def _vendor_id(c, vendor_name):
 @transactional
 def create_pr(conn, lines, requester, required_by, priority="Normal", reason="",
               raised_by="manager", request_ids=None):
-    """Raise a PR. lines = [{"part_id": ..., "qty": ...}, ...]. Returns the PR number."""
+    """Raise a PR. lines = [{"part_id": ..., "qty": ..., "comment": optional}, ...]. Returns the PR number."""
     requester = _clean_name(requester, "Requester name")
     if required_by is None:
         raise ValueError("Required-by date is required.")
     if priority not in PR_PRIORITIES:
         priority = "Normal"
-    merged = {}
+    merged, comments = {}, {}
     for line in lines or []:
         pid = str(line.get("part_id") or "").strip()
         qty = int(line.get("qty") or 0)
         if pid and qty > 0:
             merged[pid] = merged.get(pid, 0) + qty
+            note = " ".join(str(line.get("comment") or "").split())[:300]
+            if note:
+                comments[pid] = f"{comments[pid]}; {note}" if comments.get(pid) else note
     if not merged:
         raise ValueError("Add at least one item with a quantity above zero.")
 
@@ -1867,12 +1871,13 @@ def create_pr(conn, lines, requester, required_by, priority="Normal", reason="",
             c.execute(
                 """
                 INSERT INTO pr_lines (pr_id, part_id, part_name, unit, qty_requested,
-                                      stock_at_request, min_level_at_request)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                                      stock_at_request, min_level_at_request, comment)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
-                (pr_id, pid, p["name"], p["unit"], qty, int(p["quantity"] or 0), int(p["min_level"] or 0)),
+                (pr_id, pid, p["name"], p["unit"], qty, int(p["quantity"] or 0), int(p["min_level"] or 0),
+                 comments.get(pid, "")),
             )
-            summary.append(f"{p['name']} × {qty}")
+            summary.append(f"{p['name']} × {qty}" + (f" ({comments[pid]})" if comments.get(pid) else ""))
         _pr_event(
             c, pr_id, "raised", requester,
             f"Raised ({priority}), required by {required_by:%d-%b-%Y}. Items: " + "; ".join(summary)

@@ -2999,6 +2999,10 @@ def pr_whatsapp_text(detail):
         head.append(f"Reason: {pr['reason']}")
 
     def fmt_line(l):
+        note = f" — _{l['comment']}_" if l.get("comment") else ""
+        return _fmt_line(l) + note
+
+    def _fmt_line(l):
         pending = l["qty_requested"] - l["qty_received"]
         if l["qty_received"] and pending:
             return f"• {l['part_name']} — {l['qty_requested']} {l['unit']} (received {l['qty_received']}, *pending {pending}*)"
@@ -3201,14 +3205,29 @@ def _cart_set(pid):
 def _cart_remove(pid):
     _pr_draft().pop(pid, None)
     st.session_state.pop(f"pr_q_{pid}", None)
+    st.session_state.pop(f"pr_c_{pid}", None)
     ids = st.session_state.get("pr_req_ids") or {}
     for rid in [k for k, v in ids.items() if v == pid]:
         ids.pop(rid, None)
 
 
+def _pr_comments():
+    """Item comments typed in the builder — only when the 'Add comments' box is ticked."""
+    if not st.session_state.get("pr_show_comments"):
+        return {}
+    out = {}
+    for pid in _pr_draft():
+        text = " ".join(str(st.session_state.get(f"pr_c_{pid}") or "").split())
+        if text:
+            out[pid] = text
+    return out
+
+
 def _cart_clear():
     for pid in list(_pr_draft()):
         st.session_state.pop(f"pr_q_{pid}", None)
+        st.session_state.pop(f"pr_c_{pid}", None)
+    st.session_state.pop("pr_show_comments", None)
     st.session_state["pr_draft"] = {}
     st.session_state["pr_req_ids"] = {}
 
@@ -3338,11 +3357,13 @@ def _pr_review(conn):
         priority = st.segmented_control("Priority", list(PR_PRIORITIES), key="pr_priority") or "Normal"
 
     # the sheet as it will be printed
+    comments = _pr_comments()
     rows = "".join(
         f"<tr><td>{i}</td><td>{esc(by_code[pid]['name'])}<div class='pv-code'>{esc(pid)}</div></td>"
         f"<td class='n'><b>{qty}</b></td><td>{esc(by_code[pid].get('unit') or 'Nos')}</td>"
         f"<td class='n'>{int(by_code[pid].get('quantity') or 0)}</td>"
-        f"<td>{'⚠ ' + esc(on_order_text(oo[pid])) if pid in oo else ''}</td></tr>"
+        + (f"<td>{esc(comments.get(pid, ''))}</td>" if comments else "")
+        + f"<td>{'⚠ ' + esc(on_order_text(oo[pid])) if pid in oo else ''}</td></tr>"
         for i, (pid, qty) in enumerate(draft.items(), start=1) if pid in by_code
     )
     total = sum(draft.values())
@@ -3357,7 +3378,7 @@ def _pr_review(conn):
             <div><span>Reason</span><b>{esc(reason.strip() or '—')}</b></div>
           </div>
           <table class="pv-table">
-            <tr><th>#</th><th>Item</th><th>Qty</th><th>Unit</th><th>Stock now</th><th>Note</th></tr>
+            <tr><th>#</th><th>Item</th><th>Qty</th><th>Unit</th><th>Stock now</th>{"<th>Comments</th>" if comments else ""}<th>Note</th></tr>
             {rows}
           </table>
           <div class="pv-foot">{len(draft)} item(s) · {total} unit(s)
@@ -3372,7 +3393,7 @@ def _pr_review(conn):
         try:
             pr_no = create_pr(
                 conn,
-                [{"part_id": k, "qty": v} for k, v in draft.items()],
+                [{"part_id": k, "qty": v, "comment": comments.get(k, "")} for k, v in draft.items()],
                 requester, required_by, priority, reason,
                 raised_by=st.session_state.get("user", "manager"),
                 request_ids=list(req_ids),
@@ -3471,10 +3492,13 @@ def _pr_builder(conn):
 
     # ── lines ──
     if draft:
-        st.markdown(
+        t1, t2 = st.columns([0.7, 0.3], vertical_alignment="center")
+        t1.markdown(
             f"<div class='step-title'>Items in this PR <small>{len(draft)}</small></div>",
             unsafe_allow_html=True,
         )
+        show_comments = t2.checkbox("💬 Add comments", key="pr_show_comments",
+                                    help="Tick to write a note for any item — e.g. make, size, urgency, sample to show")
         history = _cached_purchase_history(conn, data_version(), tuple(sorted(draft)))
         dupes = 0
         with st.container(border=True):
@@ -3491,7 +3515,13 @@ def _pr_builder(conn):
                 if h.get("rate") or h.get("vendor_name"):
                     meta.append("Last: " + " ".join(x for x in [
                         f"₹{float(h['rate']):,.2f}" if h.get("rate") else "", h.get("vendor_name") or ""] if x))
-                c1, c2, c3, c4, c5 = st.columns([0.55, 0.09, 0.15, 0.09, 0.12], vertical_alignment="center")
+                if show_comments:
+                    c1, cc, c2, c3, c4, c5 = st.columns([0.34, 0.27, 0.08, 0.12, 0.08, 0.11],
+                                                        vertical_alignment="center")
+                    cc.text_input("Comment", key=f"pr_c_{pid}", placeholder="Comment (optional)",
+                                  label_visibility="collapsed", max_chars=300)
+                else:
+                    c1, c2, c3, c4, c5 = st.columns([0.55, 0.09, 0.15, 0.09, 0.12], vertical_alignment="center")
                 c1.markdown(
                     f"<div class='res-line'><b>{esc(p['name'])}</b> <span class='res-code'>{esc(pid)}</span>"
                     f"<div class='res-meta'>{esc(' · '.join(meta))}</div></div>",
@@ -3761,11 +3791,14 @@ def _pr_dialog_body(conn):
             "Received": l["qty_received"], "Pending": l["qty_requested"] - l["qty_received"],
             "Unit": l["unit"], "Stock now": l.get("stock_now"),
             "Rate": None if l.get("rate") is None else float(l["rate"]),
+            "Comments": l.get("comment") or "",
         }
         for l in lines
     ])
     if ldf["Rate"].isna().all():
         ldf = ldf.drop(columns=["Rate"])
+    if not (ldf["Comments"] != "").any():
+        ldf = ldf.drop(columns=["Comments"])
     st.dataframe(ldf, hide_index=True, width="stretch", height=min(320, 38 + 35 * len(ldf)),
                  column_config={"Rate": st.column_config.NumberColumn("Rate ₹", format="%.2f")})
 
