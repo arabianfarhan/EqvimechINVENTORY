@@ -41,11 +41,12 @@ def _load_fresh(module_name):
     return module
 
 
-for _mod in ("search", "duplicates", "pr_pdf", "db"):
+for _mod in ("search", "duplicates", "spelling", "pr_pdf", "db"):
     _load_fresh(_mod)
 
 from search import row_matches, search_parts
 from duplicates import find_duplicate_groups, is_possible_duplicate
+from spelling import spelling_suggestions
 from pr_pdf import build_pr_pdf
 from db import (
     APP_TIMEZONE,
@@ -99,6 +100,7 @@ from db import (
     mark_pr_ordered,
     on_order_map,
     find_similar_inwards,
+    apply_text_fixes,
     edit_pr_lines,
     receive_pr,
     save_vendor,
@@ -2627,6 +2629,45 @@ def _merge_card(conn, items, heading, why, by_name, gkey, allow_dismiss=True):
             st.rerun()
 
 
+def spelling_section(conn):
+    """Review and apply spelling fixes to item names and descriptions."""
+    fixes = spelling_suggestions(all_parts(conn))
+    label = f"🔤  Spelling check ({len(fixes)} to fix)" if fixes else "🔤  Spelling check"
+    with st.expander(label, expanded=bool(st.session_state.get("spell_open"))):
+        notice = st.session_state.pop("spell_notice", None)
+        if notice:
+            st.success(notice)
+        if not fixes:
+            st.success("No known spelling mistakes in item names or descriptions.")
+            return
+        st.caption(
+            "Only clear misspellings are suggested (WEEL → WHEEL, PULLY → PULLEY, SCERW → SCREW…). "
+            "Sizes, numbers, item codes and brand names are never changed. Untick any you want to keep as is."
+        )
+        by_code = {p["part_id"]: p for p in all_parts(conn)}
+        table = pd.DataFrame([{
+            "Fix": True, "Item code": f["part_id"],
+            "Field": "Name" if f["field"] == "name" else "Description",
+            "Now": f["current"], "After fix": f["suggested"],
+        } for f in fixes])
+        edited = st.data_editor(
+            table, key=f"spell_table_{data_version()}", hide_index=True, width="stretch",
+            height=min(520, 38 + 35 * len(table)),
+            disabled=["Item code", "Field", "Now", "After fix"],
+            column_config={"Fix": st.column_config.CheckboxColumn("Fix", width=50)},
+        )
+        chosen = [f for f, keep in zip(fixes, edited["Fix"].tolist()) if keep]
+        if st.button(f"Apply {len(chosen)} fix(es)", type="primary", icon=":material/spellcheck:",
+                     disabled=not chosen, key="spell_apply"):
+            applied, skipped = apply_text_fixes(conn, chosen)
+            bump_data_version()
+            st.session_state["spell_open"] = True
+            st.session_state["spell_notice"] = (
+                f"✅ Corrected {applied} item name/description(s)."
+                + (f" {skipped} skipped because the text was changed meanwhile." if skipped else ""))
+            st.rerun()
+
+
 def duplicates_section(conn, groups):
     label = f"🧹  Duplicate items ({len(groups)} found)" if groups else "🧹  Duplicate items"
     with st.expander(label, expanded=bool(st.session_state.get("dup_open"))):
@@ -2695,6 +2736,7 @@ def item_master_page(conn):
         )
     master_table_fragment()
     duplicates_section(conn, dupe_groups)
+    spelling_section(conn)
 
     with st.expander("⬇ ⬆  Export / import CSV"):
         import_result = st.session_state.pop("im_import_result", None)

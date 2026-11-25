@@ -2619,6 +2619,36 @@ def list_item_merges(conn, limit=200):
 
 # ── Item pricing (Accounts) ────────────────────────────────────────────────
 @transactional
+def apply_text_fixes(conn, fixes):
+    """Apply spelling fixes [{part_id, field, current, suggested}] to item names / descriptions.
+
+    A fix is applied only if the item's text is still exactly ``current`` (so an edit made since the
+    check is never overwritten). Returns (applied, skipped).
+    """
+    c = conn.cursor()
+    applied = skipped = 0
+    try:
+        for f in fixes or []:
+            field = f.get("field")
+            if field not in ("name", "description"):
+                skipped += 1
+                continue
+            c.execute(
+                f"UPDATE parts SET {field} = %s, updated_at = NOW() WHERE part_id = %s AND {field} = %s",
+                (f["suggested"], f["part_id"], f["current"]),
+            )
+            if c.rowcount:
+                applied += 1
+            else:
+                skipped += 1
+        conn.commit()
+        return applied, skipped
+    except Exception:
+        conn.rollback()
+        raise
+
+
+@transactional
 def set_item_rate(conn, part_id, new_rate, actor, note=""):
     """Set an item's unit price. Every change is logged in price_changes."""
     actor = _clean_name(actor, "Your name")
