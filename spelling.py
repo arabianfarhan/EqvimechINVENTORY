@@ -14,6 +14,8 @@ PHRASE_FIXES = {
     "draig chain": "drag chain",
     "c chaine": "c channel",
     "timmer pully": "timing pulley",
+    "busted file": "bastard file",
+    "m14 trading": "m14 threading",
 }
 
 WORD_FIXES = {
@@ -35,6 +37,7 @@ WORD_FIXES = {
     "granding": "grinding",
     "greet": "grit",
     "handel": "handle",
+    "hangloss": "handgloves",
     "hosing": "housing",
     "hydrolic": "hydraulic",
     "iddler": "idler",
