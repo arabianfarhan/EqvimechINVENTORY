@@ -843,6 +843,9 @@ def inject_theme():
         .pv-table th, .pv-table td { border: 1px solid #cbd5e1; padding: 0.3rem 0.45rem; text-align: left; vertical-align: top; }
         .pv-table th { background: #f1f5f9; } .pv-table td.n { text-align: right; }
         .pv-code { color: #64748b; font-size: 0.72rem; }
+        .st-key-pv_sheet_box { background: #fff; border-color: #0f172a !important; }
+        .st-key-pv_sheet_box div[data-testid="stCheckbox"] { justify-content: flex-end; display: flex; }
+        .pv-warn { font-size: 0.8rem; color: #92400e; margin-top: 0.3rem; }
         .pv-foot { margin-top: 0.5rem; font-size: 0.85rem; color: #334155; font-weight: 600; }
         /* PR builder text */
         .step-title { display: flex; align-items: center; gap: 0.55rem; font-weight: 800; color: #0f172a;
@@ -3221,38 +3224,34 @@ def item_desc_text(make, description):
     return description
 
 
-# Item comments live in one place (pr_comment_text / pr_comments_on) so the tick box and the comment
-# boxes on the build page and on the Preview page always agree. Each page has its own widget keys;
-# changing one copies the value across and drops the other page's widget so it redraws from the shared value.
+# Item comments live in one place (pr_comment_text / pr_comments_on), shared by the build page and the
+# Preview. Each tick box / comment box copies the shared value just before it is drawn, and its callback
+# writes back to the shared value only - never to the other page's widget, whose browser copy may be stale.
 _CMT_TOGGLES = ("pr_cmt_toggle_b", "pr_cmt_toggle_p")
 
 
 def _cmt_toggle_changed(key):
-    st.session_state["pr_comments_on"] = bool(st.session_state.get(key))
-    for k in _CMT_TOGGLES:
-        if k != key:
-            st.session_state.pop(k, None)
+    value = st.session_state.get(key)
+    if value is not None:
+        st.session_state["pr_comments_on"] = bool(value)
 
 
 def _cmt_text_changed(key, pid):
-    st.session_state.setdefault("pr_comment_text", {})[pid] = str(st.session_state.get(key) or "")
-    for k in (f"pr_c_{pid}", f"pr_cp_{pid}"):
-        if k != key:
-            st.session_state.pop(k, None)
+    value = st.session_state.get(key)
+    if value is not None:
+        st.session_state.setdefault("pr_comment_text", {})[pid] = str(value)
 
 
-def _cmt_toggle(container, key):
-    return container.checkbox(
-        "💬 Add comments", key=key, value=bool(st.session_state.get("pr_comments_on")),
-        on_change=_cmt_toggle_changed, args=(key,),
-        help="Tick to write a note for any item — e.g. make, size, urgency, sample to show",
-    )
+def _cmt_toggle(container, key, label="💬 Add comments",
+                help_text="Tick to write a note for any item — e.g. make, size, urgency, sample to show"):
+    st.session_state[key] = bool(st.session_state.get("pr_comments_on"))
+    return container.checkbox(label, key=key, on_change=_cmt_toggle_changed, args=(key,), help=help_text)
 
 
 def _cmt_input(container, key, pid, label="Comment", collapsed=True):
+    st.session_state[key] = (st.session_state.get("pr_comment_text") or {}).get(pid, "")
     container.text_input(
-        label, key=key, value=(st.session_state.get("pr_comment_text") or {}).get(pid, ""),
-        placeholder="Comment (optional)", max_chars=300,
+        label, key=key, placeholder="Comment (optional)", max_chars=300,
         label_visibility="collapsed" if collapsed else "visible",
         on_change=_cmt_text_changed, args=(key, pid),
     )
@@ -3406,56 +3405,72 @@ def _pr_review(conn):
         st.session_state.setdefault("pr_priority", "Normal")
         priority = st.segmented_control("Priority", list(PR_PRIORITIES), key="pr_priority") or "Normal"
 
-    # item comments can be added here too (same as the tick box on the build page)
-    if _cmt_toggle(st, "pr_cmt_toggle_p"):
-        with st.container(border=True):
-            for pid in draft:
-                if pid in by_code:
-                    a, b = st.columns([0.4, 0.6], vertical_alignment="center")
-                    a.markdown(f"**{esc(by_code[pid]['name'])}** <span class='res-code'>{esc(pid)}</span>",
-                               unsafe_allow_html=True)
-                    _cmt_input(b, f"pr_cp_{pid}", pid)
-
-    # the sheet as it will be printed
-    comments = _pr_comments()
-
-    def _comment_cell(pid):
-        parts = []
-        if comments.get(pid):
-            parts.append(esc(comments[pid]))
-        if pid in oo:
-            parts.append(f"<span class='pv-code'>⚠ already {esc(on_order_text(oo[pid]))}</span>")
-        return "<br>".join(parts)
-
-    rows = "".join(
-        f"<tr><td>{i}</td><td>{esc(by_code[pid]['name'])}<div class='pv-code'>{esc(pid)}</div></td>"
-        f"<td>{esc(item_desc_text(by_code[pid].get('make'), by_code[pid].get('description')))}</td>"
-        f"<td class='n'><b>{qty}</b></td><td>{esc(by_code[pid].get('unit') or 'Nos')}</td>"
-        f"<td class='n'>{int(by_code[pid].get('quantity') or 0)}</td>"
-        + f"<td>{_comment_cell(pid)}</td></tr>"
-        for i, (pid, qty) in enumerate(draft.items(), start=1) if pid in by_code
-    )
+    # ── the sheet as it will be printed ──
     total = sum(draft.values())
-    st.markdown(
-        f"""
-        <div class="pv-sheet">
-          <div class="pv-head"><b>EQVIMECH PVT. LTD. — PURCHASE REQUISITION</b><span>Draft · not saved yet</span></div>
-          <div class="pv-grid">
-            <div><span>Requested by</span><b>{esc(requester.strip() or '—')}</b></div>
-            <div><span>Required by</span><b>{required_by:%d-%b-%Y}</b></div>
-            <div><span>Priority</span><b>{esc(priority)}</b></div>
-            <div><span>Reason</span><b>{esc(reason.strip() or '—')}</b></div>
-          </div>
-          <table class="pv-table">
-            <tr><th>#</th><th>Item</th><th>Description</th><th>Qty</th><th>Unit</th><th>Stock now</th><th>Comments</th></tr>
-            {rows}
-          </table>
-          <div class="pv-foot">{len(draft)} item(s) · {total} unit(s)
-            {f" · includes {len(req_ids)} floor request(s)" if req_ids else ""}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    with st.container(border=True, key="pv_sheet_box"):
+        st.markdown(
+            f"""
+            <div class="pv-head"><b>EQVIMECH PVT. LTD. — PURCHASE REQUISITION</b><span>Draft · not saved yet</span></div>
+            <div class="pv-grid">
+              <div><span>Requested by</span><b>{esc(requester.strip() or '—')}</b></div>
+              <div><span>Required by</span><b>{required_by:%d-%b-%Y}</b></div>
+              <div><span>Priority</span><b>{esc(priority)}</b></div>
+              <div><span>Reason</span><b>{esc(reason.strip() or '—')}</b></div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        # tick box sits on the table's top edge, right above the Comments column
+        _, tick_col = st.columns([0.78, 0.22])
+        with tick_col:
+            show_comments = _cmt_toggle(st, "pr_cmt_toggle_p", label="Comments",
+                                        help_text="Tick to type a comment in the Comments column. "
+                                                  "Unticked, the column is left out of the PR and the print.")
+        pids = [pid for pid in draft if pid in by_code]
+        texts = st.session_state.get("pr_comment_text") or {}
+        table = pd.DataFrame([{
+            "#": i,
+            "Item": by_code[pid]["name"],
+            "Code": pid,
+            "Description": item_desc_text(by_code[pid].get("make"), by_code[pid].get("description")),
+            "Qty": int(draft[pid]),
+            "Unit": by_code[pid].get("unit") or "Nos",
+            "Stock now": int(by_code[pid].get("quantity") or 0),
+            "Comments": texts.get(pid, ""),
+        } for i, pid in enumerate(pids, start=1)])
+        if not show_comments:
+            table = table.drop(columns=["Comments"])
+        edited = st.data_editor(
+            table, key=f"pr_pv_table_{int(bool(show_comments))}", hide_index=True, width="stretch",
+            disabled=[c for c in table.columns if c != "Comments"],
+            column_config={
+                "#": st.column_config.NumberColumn("#", width=40),
+                "Item": st.column_config.TextColumn("Item", width="medium"),
+                "Code": st.column_config.TextColumn("Code", width="small"),
+                "Description": st.column_config.TextColumn("Description", width="medium"),
+                "Qty": st.column_config.NumberColumn("Qty", width=55),
+                "Unit": st.column_config.TextColumn("Unit", width=55),
+                "Stock now": st.column_config.NumberColumn("Stock now", width=80),
+                "Comments": st.column_config.TextColumn(
+                    "Comments ✎", width="medium", max_chars=300,
+                    help="Tap a cell and type — e.g. make, size, urgency, sample to show"),
+            },
+        )
+        if show_comments and "Comments" in edited.columns:
+            store = st.session_state.setdefault("pr_comment_text", {})
+            for pid, text in zip(pids, edited["Comments"].tolist()):
+                text = "" if text is None or (isinstance(text, float) and pd.isna(text)) else str(text)
+                store[pid] = text
+        warn = [f"{by_code[pid]['name']} — {on_order_text(oo[pid])}" for pid in pids if pid in oo]
+        if warn:
+            st.markdown("<div class='pv-warn'>⚠ Already on order: " + esc("; ".join(warn)) + "</div>",
+                        unsafe_allow_html=True)
+        st.markdown(
+            f"<div class='pv-foot'>{len(draft)} item(s) · {total} unit(s)"
+            f"{f' · includes {len(req_ids)} floor request(s)' if req_ids else ''}</div>",
+            unsafe_allow_html=True,
+        )
+    comments = _pr_comments()
 
     c1, c2 = st.columns([0.62, 0.38])
     if c1.button("Confirm & raise PR", key="pr_confirm", type="primary", icon=":material/send:", width="stretch"):
@@ -3517,6 +3532,8 @@ def _pr_builder(conn):
     )
     if bar2.button("Review & raise PR", key="pr_review", type="primary", icon=":material/visibility:",
                    width="stretch", disabled=not draft):
+        for k in ("pr_pv_table_0", "pr_pv_table_1"):  # the preview table starts from the saved comments
+            st.session_state.pop(k, None)
         show_pr_review_dialog()
 
     # ── add items ──
