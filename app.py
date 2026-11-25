@@ -3206,6 +3206,8 @@ def _cart_remove(pid):
     _pr_draft().pop(pid, None)
     st.session_state.pop(f"pr_q_{pid}", None)
     st.session_state.pop(f"pr_c_{pid}", None)
+    st.session_state.pop(f"pr_cp_{pid}", None)
+    (st.session_state.get("pr_comment_text") or {}).pop(pid, None)
     ids = st.session_state.get("pr_req_ids") or {}
     for rid in [k for k, v in ids.items() if v == pid]:
         ids.pop(rid, None)
@@ -3219,13 +3221,51 @@ def item_desc_text(make, description):
     return description
 
 
+# Item comments live in one place (pr_comment_text / pr_comments_on) so the tick box and the comment
+# boxes on the build page and on the Preview page always agree. Each page has its own widget keys;
+# changing one copies the value across and drops the other page's widget so it redraws from the shared value.
+_CMT_TOGGLES = ("pr_cmt_toggle_b", "pr_cmt_toggle_p")
+
+
+def _cmt_toggle_changed(key):
+    st.session_state["pr_comments_on"] = bool(st.session_state.get(key))
+    for k in _CMT_TOGGLES:
+        if k != key:
+            st.session_state.pop(k, None)
+
+
+def _cmt_text_changed(key, pid):
+    st.session_state.setdefault("pr_comment_text", {})[pid] = str(st.session_state.get(key) or "")
+    for k in (f"pr_c_{pid}", f"pr_cp_{pid}"):
+        if k != key:
+            st.session_state.pop(k, None)
+
+
+def _cmt_toggle(container, key):
+    return container.checkbox(
+        "💬 Add comments", key=key, value=bool(st.session_state.get("pr_comments_on")),
+        on_change=_cmt_toggle_changed, args=(key,),
+        help="Tick to write a note for any item — e.g. make, size, urgency, sample to show",
+    )
+
+
+def _cmt_input(container, key, pid, label="Comment", collapsed=True):
+    container.text_input(
+        label, key=key, value=(st.session_state.get("pr_comment_text") or {}).get(pid, ""),
+        placeholder="Comment (optional)", max_chars=300,
+        label_visibility="collapsed" if collapsed else "visible",
+        on_change=_cmt_text_changed, args=(key, pid),
+    )
+
+
 def _pr_comments():
-    """Item comments typed in the builder — only when the 'Add comments' box is ticked."""
-    if not st.session_state.get("pr_show_comments"):
+    """Item comments typed for this PR — only while 'Add comments' is ticked."""
+    if not st.session_state.get("pr_comments_on"):
         return {}
     out = {}
+    texts = st.session_state.get("pr_comment_text") or {}
     for pid in _pr_draft():
-        text = " ".join(str(st.session_state.get(f"pr_c_{pid}") or "").split())
+        text = " ".join(str(texts.get(pid) or "").split())
         if text:
             out[pid] = text
     return out
@@ -3235,7 +3275,9 @@ def _cart_clear():
     for pid in list(_pr_draft()):
         st.session_state.pop(f"pr_q_{pid}", None)
         st.session_state.pop(f"pr_c_{pid}", None)
-    st.session_state.pop("pr_show_comments", None)
+        st.session_state.pop(f"pr_cp_{pid}", None)
+    for k in ("pr_comments_on", "pr_comment_text") + _CMT_TOGGLES:
+        st.session_state.pop(k, None)
     st.session_state["pr_draft"] = {}
     st.session_state["pr_req_ids"] = {}
 
@@ -3364,15 +3406,33 @@ def _pr_review(conn):
         st.session_state.setdefault("pr_priority", "Normal")
         priority = st.segmented_control("Priority", list(PR_PRIORITIES), key="pr_priority") or "Normal"
 
+    # item comments can be added here too (same as the tick box on the build page)
+    if _cmt_toggle(st, "pr_cmt_toggle_p"):
+        with st.container(border=True):
+            for pid in draft:
+                if pid in by_code:
+                    a, b = st.columns([0.4, 0.6], vertical_alignment="center")
+                    a.markdown(f"**{esc(by_code[pid]['name'])}** <span class='res-code'>{esc(pid)}</span>",
+                               unsafe_allow_html=True)
+                    _cmt_input(b, f"pr_cp_{pid}", pid)
+
     # the sheet as it will be printed
     comments = _pr_comments()
+
+    def _comment_cell(pid):
+        parts = []
+        if comments.get(pid):
+            parts.append(esc(comments[pid]))
+        if pid in oo:
+            parts.append(f"<span class='pv-code'>⚠ already {esc(on_order_text(oo[pid]))}</span>")
+        return "<br>".join(parts)
+
     rows = "".join(
         f"<tr><td>{i}</td><td>{esc(by_code[pid]['name'])}<div class='pv-code'>{esc(pid)}</div></td>"
         f"<td>{esc(item_desc_text(by_code[pid].get('make'), by_code[pid].get('description')))}</td>"
         f"<td class='n'><b>{qty}</b></td><td>{esc(by_code[pid].get('unit') or 'Nos')}</td>"
         f"<td class='n'>{int(by_code[pid].get('quantity') or 0)}</td>"
-        + (f"<td>{esc(comments.get(pid, ''))}</td>" if comments else "")
-        + f"<td>{'⚠ ' + esc(on_order_text(oo[pid])) if pid in oo else ''}</td></tr>"
+        + f"<td>{_comment_cell(pid)}</td></tr>"
         for i, (pid, qty) in enumerate(draft.items(), start=1) if pid in by_code
     )
     total = sum(draft.values())
@@ -3387,7 +3447,7 @@ def _pr_review(conn):
             <div><span>Reason</span><b>{esc(reason.strip() or '—')}</b></div>
           </div>
           <table class="pv-table">
-            <tr><th>#</th><th>Item</th><th>Description</th><th>Qty</th><th>Unit</th><th>Stock now</th>{"<th>Comments</th>" if comments else ""}<th>Note</th></tr>
+            <tr><th>#</th><th>Item</th><th>Description</th><th>Qty</th><th>Unit</th><th>Stock now</th><th>Comments</th></tr>
             {rows}
           </table>
           <div class="pv-foot">{len(draft)} item(s) · {total} unit(s)
@@ -3506,8 +3566,7 @@ def _pr_builder(conn):
             f"<div class='step-title'>Items in this PR <small>{len(draft)}</small></div>",
             unsafe_allow_html=True,
         )
-        show_comments = t2.checkbox("💬 Add comments", key="pr_show_comments",
-                                    help="Tick to write a note for any item — e.g. make, size, urgency, sample to show")
+        show_comments = _cmt_toggle(t2, "pr_cmt_toggle_b")
         history = _cached_purchase_history(conn, data_version(), tuple(sorted(draft)))
         dupes = 0
         with st.container(border=True):
@@ -3527,8 +3586,7 @@ def _pr_builder(conn):
                 if show_comments:
                     c1, cc, c2, c3, c4, c5 = st.columns([0.34, 0.27, 0.08, 0.12, 0.08, 0.11],
                                                         vertical_alignment="center")
-                    cc.text_input("Comment", key=f"pr_c_{pid}", placeholder="Comment (optional)",
-                                  label_visibility="collapsed", max_chars=300)
+                    _cmt_input(cc, f"pr_c_{pid}", pid)
                 else:
                     c1, c2, c3, c4, c5 = st.columns([0.55, 0.09, 0.15, 0.09, 0.12], vertical_alignment="center")
                 c1.markdown(
