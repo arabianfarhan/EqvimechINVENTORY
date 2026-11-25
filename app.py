@@ -3211,6 +3211,14 @@ def _cart_remove(pid):
         ids.pop(rid, None)
 
 
+def item_desc_text(make, description):
+    """'Make: TLX - Linear bearing' — the same wording as the PR PDF."""
+    make, description = str(make or "").strip(), str(description or "").strip()
+    if make:
+        return f"Make: {make}" + (f" - {description}" if description else "")
+    return description
+
+
 def _pr_comments():
     """Item comments typed in the builder — only when the 'Add comments' box is ticked."""
     if not st.session_state.get("pr_show_comments"):
@@ -3360,6 +3368,7 @@ def _pr_review(conn):
     comments = _pr_comments()
     rows = "".join(
         f"<tr><td>{i}</td><td>{esc(by_code[pid]['name'])}<div class='pv-code'>{esc(pid)}</div></td>"
+        f"<td>{esc(item_desc_text(by_code[pid].get('make'), by_code[pid].get('description')))}</td>"
         f"<td class='n'><b>{qty}</b></td><td>{esc(by_code[pid].get('unit') or 'Nos')}</td>"
         f"<td class='n'>{int(by_code[pid].get('quantity') or 0)}</td>"
         + (f"<td>{esc(comments.get(pid, ''))}</td>" if comments else "")
@@ -3378,7 +3387,7 @@ def _pr_review(conn):
             <div><span>Reason</span><b>{esc(reason.strip() or '—')}</b></div>
           </div>
           <table class="pv-table">
-            <tr><th>#</th><th>Item</th><th>Qty</th><th>Unit</th><th>Stock now</th>{"<th>Comments</th>" if comments else ""}<th>Note</th></tr>
+            <tr><th>#</th><th>Item</th><th>Description</th><th>Qty</th><th>Unit</th><th>Stock now</th>{"<th>Comments</th>" if comments else ""}<th>Note</th></tr>
             {rows}
           </table>
           <div class="pv-foot">{len(draft)} item(s) · {total} unit(s)
@@ -3787,7 +3796,9 @@ def _pr_dialog_body(conn):
 
     ldf = pd.DataFrame([
         {
-            "Item": l["part_name"], "Code": l["part_id"], "Ordered": l["qty_requested"],
+            "Item": l["part_name"], "Code": l["part_id"],
+            "Description": item_desc_text(l.get("make"), l.get("description")),
+            "Ordered": l["qty_requested"],
             "Received": l["qty_received"], "Pending": l["qty_requested"] - l["qty_received"],
             "Unit": l["unit"], "Stock now": l.get("stock_now"),
             "Rate": None if l.get("rate") is None else float(l["rate"]),
@@ -3799,6 +3810,11 @@ def _pr_dialog_body(conn):
         ldf = ldf.drop(columns=["Rate"])
     if not (ldf["Comments"] != "").any():
         ldf = ldf.drop(columns=["Comments"])
+    if not (ldf["Description"] != "").any():
+        ldf = ldf.drop(columns=["Description"])
+    if not (ldf["Received"] > 0).any():
+        # nothing has arrived yet: Received is all 0 and Pending just repeats Ordered
+        ldf = ldf.drop(columns=["Received", "Pending"])
     st.dataframe(ldf, hide_index=True, width="stretch", height=min(320, 38 + 35 * len(ldf)),
                  column_config={"Rate": st.column_config.NumberColumn("Rate ₹", format="%.2f")})
 
