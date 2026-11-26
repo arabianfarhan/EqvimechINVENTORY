@@ -122,7 +122,7 @@ PICK_USER_OPTIONS = ["Ravi", "Shani", "Suraj", "Mangesh", "Ram", "Sonu", "Sandip
 
 # Old default codes. They are in a public GitHub repo, so they must be
 # replaced via Streamlit secrets (MANAGER_PASSWORD / RESET_CODE).
-_LEGACY_MANAGER_PASSWORD = "321"
+_LEGACY_MANAGER_PASSWORD = "630"
 _LEGACY_ACCOUNTS_PASSWORD = "0909"
 
 
