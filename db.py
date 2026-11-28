@@ -22,7 +22,7 @@ from psycopg2.extensions import TRANSACTION_STATUS_IDLE
 
 # Bump this whenever init_db() creates or changes tables. The app re-runs
 # schema setup when it changes, even if the server process was not restarted.
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 ITEMS_SNAPSHOT_CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "items_master_live.csv")
 APP_TIMEZONE = "Asia/Kolkata"
@@ -399,6 +399,35 @@ def normalize_existing_categories(conn):
 def _pin_hash(pin, salt):
     import hashlib
     return hashlib.pbkdf2_hmac("sha256", str(pin).encode(), bytes.fromhex(salt), 120_000).hex()
+
+
+# Built-in personal logins (same PINs as the Task Board), stored salted + hashed.
+# Added once; after that the Admin can change or remove them in the app.
+_SEED_MANAGER_LOGINS = (
+    ("Vishwas", "30b22bb17b36d574d883b80dd17b536a", "c98e0d4ed2e22797adf1705e000b09e3102cae47993abc0959cf7e3ce10805f7"),
+    ("Mangesh", "792aa55dc5f452a0c38644074551c859", "35cd4fbc7ce42260376c1ec4874b17cfa5ee3332e7330f19f5bd6d60a9327cb4"),
+    ("Yusuf", "ee7a5348015a8de6ca91af816b7de38b", "54cf2065171756e64b60042f82b26ab51c950ab1d1cea9ab051985babaa166e6"),
+)
+
+
+def seed_manager_logins(conn):
+    """Add the built-in manager logins once (never re-adds one the Admin removed later)."""
+    if get_meta(conn, "manager_logins_seeded"):
+        return
+    c = conn.cursor()
+    try:
+        for name, salt, pin_hash in _SEED_MANAGER_LOGINS:
+            c.execute(
+                "INSERT INTO manager_logins (name, pin_salt, pin_hash, created_by) "
+                "SELECT %s, %s, %s, 'built-in' "
+                "WHERE NOT EXISTS (SELECT 1 FROM manager_logins WHERE lower(name) = lower(%s))",
+                (name, salt, pin_hash, name),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    set_meta(conn, "manager_logins_seeded", "1")
 
 
 def list_manager_logins(conn):

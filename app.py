@@ -101,6 +101,7 @@ from db import (
     on_order_map,
     find_similar_inwards,
     list_manager_logins,
+    seed_manager_logins,
     find_manager_by_pin,
     set_manager_login,
     remove_manager_login,
@@ -208,6 +209,7 @@ def _run_db_init(schema_version=SCHEMA_VERSION):
     try:
         init_db(conn)
         bootstrap_parts_catalog(conn)
+        seed_manager_logins(conn)
     finally:
         manager.putconn(conn)
     return True
@@ -1163,6 +1165,14 @@ def stock_pill(qty, min_level):
         return f'<span class="pill p-low">Low &mdash; {qty} left</span>'
     return f'<span class="pill p-ok">&#10003; {qty} in stock</span>'
 
+
+
+def logged_in_name():
+    """The logged-in manager's own name (blank for the shared Admin login), used to pre-fill 'Your name'."""
+    if st.session_state.get("role") != "manager":
+        return ""
+    name = st.session_state.get("manager_name") or ""
+    return "" if name in ("", "Admin") else name
 
 
 def manager_logins_panel():
@@ -2744,7 +2754,8 @@ def duplicates_section(conn, groups):
             "Pick the one to **keep**, count the real stock, and merge. All history, PRs and requests move "
             "to the kept item; the duplicate is switched off (not deleted) and the merge is logged."
         )
-        by_name = st.text_input("Your name *", key="dup_actor", placeholder="Saved with each merge as proof")
+        by_name = st.text_input("Your name *", key="dup_actor", value=logged_in_name(),
+                                placeholder="Saved with each merge as proof")
 
         # duplicates spotted by people (names too different for the automatic finder)
         st.markdown("**Merge items you found yourself**")
@@ -3497,7 +3508,7 @@ def _pr_review(conn):
     st.caption("Check the sheet, fill in the details and confirm. Nothing is saved until you press Confirm.")
     d1, d2 = st.columns(2)
     requester = d1.text_input("Requested by *", key="pr_requester",
-                              value=st.session_state.get("pr_last_requester", ""),
+                              value=st.session_state.get("pr_last_requester", "") or logged_in_name(),
                               placeholder="Full name — saved as proof")
     reason = d2.text_input("Reason / job / machine", key="pr_reason", placeholder="e.g. UTM-120 for XYZ Ltd")
     d3, d4 = st.columns([0.62, 0.38])
@@ -3805,7 +3816,7 @@ def _pr_edit_panel(conn, pr, lines):
             st.rerun(scope="fragment")
 
         c1, c2 = st.columns(2)
-        by = c1.text_input("Your name *", key=f"pr_edit_by_{pr_id}")
+        by = c1.text_input("Your name *", key=f"pr_edit_by_{pr_id}", value=logged_in_name())
         why = c2.text_input("Reason for change *", placeholder="e.g. wrong item added by mistake",
                             key=f"pr_edit_why_{pr_id}")
         s1, s2 = st.columns(2)
@@ -4020,7 +4031,7 @@ def _pr_dialog_body(conn):
         vendors = [v["name"] for v in _cached_vendors(conn, data_version())]
         with st.form(f"pr_order_{pr_id}", border=True):
             c1, c2 = st.columns(2)
-            by = c1.text_input("Ordered by *", placeholder="Your name")
+            by = c1.text_input("Ordered by *", placeholder="Your name", value=logged_in_name())
             exp = c2.date_input("Expected delivery *", value=max(_today_date(), pr["required_by"] or _today_date()),
                                 min_value=_today_date(), format="DD/MM/YYYY")
             c3, c4 = st.columns(2)
@@ -4057,7 +4068,7 @@ def _pr_dialog_body(conn):
                     step=1, value=pending if fill_all else 0, key=f"pr_rq_{pr_id}_{l['id']}_{int(fill_all)}",
                 )
             c1, c2 = st.columns(2)
-            by = c1.text_input("Received by *", placeholder="Your name")
+            by = c1.text_input("Received by *", placeholder="Your name", value=logged_in_name())
             grn = c2.text_input("GRN / challan / invoice no. *")
             submitted = st.form_submit_button("Confirm goods received", type="primary", width="stretch")
         recv_key = f"pr_recv_check_{pr_id}"
@@ -4098,7 +4109,7 @@ def _pr_dialog_body(conn):
     elif action == "📅 Change expected date":
         with st.form(f"pr_date_{pr_id}", border=True):
             c1, c2 = st.columns(2)
-            by = c1.text_input("Your name *")
+            by = c1.text_input("Your name *", value=logged_in_name())
             new_date = c2.date_input("New expected date *", value=pr.get("expected_date") or _today_date(),
                                      format="DD/MM/YYYY")
             why = st.text_input("Reason for the change *", placeholder="e.g. Vendor said dispatch delayed")
@@ -4110,7 +4121,7 @@ def _pr_dialog_body(conn):
                     error = str(exc)
     elif action == "📝 Add note":
         with st.form(f"pr_note_{pr_id}", border=True):
-            by = st.text_input("Your name *")
+            by = st.text_input("Your name *", value=logged_in_name())
             note = st.text_area("Note *", placeholder="e.g. Called vendor, dispatch on Monday", height=80)
             if st.form_submit_button("Add note", type="primary", width="stretch"):
                 try:
@@ -4127,7 +4138,7 @@ def _pr_dialog_body(conn):
                 "Close short: stop waiting for the pending quantity." if received_any
                 else "Cancel: nothing was received and the PR is no longer needed."
             )
-            by = st.text_input("Your name *")
+            by = st.text_input("Your name *", value=logged_in_name())
             why = st.text_input("Reason *")
             label = "Close short" if received_any else "Cancel PR"
             if st.form_submit_button(label, type="primary", width="stretch"):
@@ -4300,7 +4311,7 @@ def _pr_requests_view(conn):
         pick = st.selectbox("Request", [r["id"] for r in reqs],
                             format_func=lambda i: next(f"{r['part_name']} × {r['qty']} — {r['requested_by']}"
                                                        for r in reqs if r["id"] == i), key="pr_dismiss_pick")
-        by = st.text_input("Your name *", key="pr_dismiss_by")
+        by = st.text_input("Your name *", key="pr_dismiss_by", value=logged_in_name())
         why = st.text_input("Reason *", key="pr_dismiss_why", placeholder="e.g. Enough stock in rack B")
         if st.button("Dismiss", key="pr_dismiss_go"):
             try:
