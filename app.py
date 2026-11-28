@@ -100,6 +100,10 @@ from db import (
     mark_pr_ordered,
     on_order_map,
     find_similar_inwards,
+    list_manager_logins,
+    find_manager_by_pin,
+    set_manager_login,
+    remove_manager_login,
     apply_text_fixes,
     edit_pr_lines,
     receive_pr,
@@ -1161,6 +1165,49 @@ def stock_pill(qty, min_level):
 
 
 
+def manager_logins_panel():
+    """Admin only: add, change or remove the personal manager PINs."""
+    with st.expander("👥 Manager logins", expanded=bool(st.session_state.get("ml_open"))):
+        notice = st.session_state.pop("ml_notice", None)
+        if notice:
+            st.success(notice)
+        try:
+            with db_session() as mconn:
+                people = list_manager_logins(mconn)
+        except Exception as exc:
+            st.error(f"Could not load logins: {exc}")
+            return
+        st.caption("Each person logs in as Manager with their own PIN; their name is saved on what they do.")
+        for p in people:
+            c1, c2 = st.columns([0.7, 0.3], vertical_alignment="center")
+            c1.markdown(f"**{esc(p['name'])}**")
+            if c2.button("Remove", key=f"ml_rm_{p['name']}", width="stretch", type="secondary"):
+                with db_session() as mconn:
+                    remove_manager_login(mconn, p["name"])
+                st.session_state["ml_open"] = True
+                st.session_state["ml_notice"] = f"Removed {p['name']}."
+                st.rerun()
+        if not people:
+            st.info("No personal logins yet.")
+        with st.form("ml_add", clear_on_submit=True):
+            name = st.text_input("Name", placeholder="e.g. Vishwas")
+            pin = st.text_input("PIN", type="password", placeholder="3–8 digits", help="Must differ from every other login")
+            if st.form_submit_button("Save login", type="primary", width="stretch"):
+                try:
+                    with db_session() as mconn:
+                        set_manager_login(
+                            mconn, name, pin, st.session_state.get("manager_name") or "Admin",
+                            reserved_pins=[_secret("MANAGER_PASSWORD", _LEGACY_MANAGER_PASSWORD),
+                                           _secret("ACCOUNTS_PASSWORD", _LEGACY_ACCOUNTS_PASSWORD)],
+                        )
+                except ValueError as exc:
+                    st.error(str(exc))
+                else:
+                    st.session_state["ml_open"] = True
+                    st.session_state["ml_notice"] = f"Saved — {name.strip()} can now log in as Manager with their PIN."
+                    st.rerun()
+
+
 @st.dialog("Manager Access", width="small", dismissible=False)
 def show_manager_password_dialog():
     password = st.text_input(
@@ -1171,8 +1218,20 @@ def show_manager_password_dialog():
     unlock_col, cancel_col = st.columns(2)
 
     if unlock_col.button("Unlock", key="manager_unlock", type="primary"):
+        # the main password is the Admin; each other manager is recognised by their own PIN
+        who, admin = None, False
         if check_manager_password(password):
+            who, admin = "Admin", True
+        else:
+            try:
+                with db_session() as login_conn:
+                    who = find_manager_by_pin(login_conn, password)
+            except Exception:
+                who = None
+        if who:
             st.session_state["manager_authenticated"] = True
+            st.session_state["manager_name"] = who
+            st.session_state["manager_is_admin"] = admin
             st.session_state["role"] = "manager"
             st.session_state.pop("manager_login_requested", None)
             st.session_state.pop("manager_password_input", None)
@@ -1235,6 +1294,8 @@ def sidebar_identity(conn):
                 st.session_state["role"] = "user"
                 st.session_state["user"] = "operator"
                 st.session_state["manager_authenticated"] = False
+                st.session_state.pop("manager_name", None)
+                st.session_state.pop("manager_is_admin", None)
                 st.session_state["accounts_authenticated"] = False
                 st.session_state.pop("manager_login_requested", None)
                 st.session_state.pop("accounts_login_requested", None)
@@ -1287,7 +1348,8 @@ def sidebar_identity(conn):
 
         role_now = st.session_state.get("role")
         if role_now == "manager" and manager_ready:
-            st.session_state["user"] = "manager"
+            # recorded on every action this person takes (inward, master edits, PRs...)
+            st.session_state["user"] = st.session_state.get("manager_name") or "manager"
             st.session_state["accounts_authenticated"] = False
         elif role_now == "accounts" and accounts_ready:
             st.session_state["user"] = "accounts"
@@ -1297,7 +1359,8 @@ def sidebar_identity(conn):
             st.session_state["user"] = "operator"
 
         st.markdown("---")
-        st.caption(f"Access: **{st.session_state['role'].capitalize()}**")
+        who = st.session_state.get("manager_name") if st.session_state.get("role") == "manager" else None
+        st.caption(f"Access: **{st.session_state['role'].capitalize()}**" + (f" — **{who}**" if who else ""))
 
         is_manager = manager_ready and st.session_state.get("role") == "manager"
         if is_manager and manager_password_is_default():
@@ -1310,6 +1373,9 @@ def sidebar_identity(conn):
                 "Accounts password is the default (0909), which is visible in the public code. "
                 "Set ACCOUNTS_PASSWORD in the Streamlit app secrets."
             )
+
+        if is_manager and st.session_state.get("manager_is_admin"):
+            manager_logins_panel()
 
         # Database wipe: managers only, and only when a RESET_CODE secret exists.
         reset_secret = _secret("RESET_CODE")

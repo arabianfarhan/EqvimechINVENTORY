@@ -22,7 +22,7 @@ from psycopg2.extensions import TRANSACTION_STATUS_IDLE
 
 # Bump this whenever init_db() creates or changes tables. The app re-runs
 # schema setup when it changes, even if the server process was not restarted.
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 ITEMS_SNAPSHOT_CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "items_master_live.csv")
 APP_TIMEZONE = "Asia/Kolkata"
@@ -391,6 +391,75 @@ def normalize_existing_categories(conn):
             else:
                 c.execute("UPDATE parts SET category = %s WHERE category = %s", (wanted, current))
     conn.commit()
+
+
+# ── Named manager logins ───────────────────────────────────────────────────
+# Each manager has their own PIN; the app tells who logged in from the PIN alone and records
+# their name on everything they do. PINs are stored salted + hashed (never in plain text).
+def _pin_hash(pin, salt):
+    import hashlib
+    return hashlib.pbkdf2_hmac("sha256", str(pin).encode(), bytes.fromhex(salt), 120_000).hex()
+
+
+def list_manager_logins(conn):
+    c = conn.cursor()
+    c.execute("SELECT name, created_by, updated_at FROM manager_logins ORDER BY lower(name)")
+    return c.fetchall()
+
+
+def find_manager_by_pin(conn, pin):
+    """Name of the manager whose PIN this is, or None."""
+    import hmac
+    pin = str(pin or "").strip()
+    if not pin:
+        return None
+    c = conn.cursor()
+    c.execute("SELECT name, pin_salt, pin_hash FROM manager_logins")
+    for r in c.fetchall():
+        if hmac.compare_digest(_pin_hash(pin, r["pin_salt"]), r["pin_hash"]):
+            return r["name"]
+    return None
+
+
+@transactional
+def set_manager_login(conn, name, pin, actor, reserved_pins=()):
+    """Add a manager or change their PIN. PINs must be unique (the PIN alone identifies the person)."""
+    import secrets as _secrets
+    name = " ".join(str(name or "").split())
+    pin = str(pin or "").strip()
+    if len(name) < 2:
+        raise ValueError("Enter the person's name.")
+    if not pin.isdigit() or not 3 <= len(pin) <= 8:
+        raise ValueError("PIN must be 3 to 8 digits.")
+    if pin in {str(p) for p in reserved_pins if p}:
+        raise ValueError("That PIN is already used by another login. Choose a different PIN.")
+    owner = find_manager_by_pin(conn, pin)
+    if owner and owner.lower() != name.lower():
+        raise ValueError(f"That PIN is already used by {owner}. Each person needs a different PIN.")
+    salt = _secrets.token_hex(16)
+    c = conn.cursor()
+    try:
+        c.execute("DELETE FROM manager_logins WHERE lower(name) = lower(%s)", (name,))
+        c.execute(
+            "INSERT INTO manager_logins (name, pin_salt, pin_hash, created_by, updated_at) "
+            "VALUES (%s, %s, %s, %s, NOW())",
+            (name, salt, _pin_hash(pin, salt), actor),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
+@transactional
+def remove_manager_login(conn, name):
+    c = conn.cursor()
+    try:
+        c.execute("DELETE FROM manager_logins WHERE name = %s", (name,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def get_meta(conn, key):
@@ -1752,6 +1821,13 @@ CREATE TABLE IF NOT EXISTS price_changes (
 );
 CREATE INDEX IF NOT EXISTS idx_price_changes_part ON price_changes(part_id);
 ALTER TABLE pr_lines ADD COLUMN IF NOT EXISTS comment TEXT DEFAULT '';
+CREATE TABLE IF NOT EXISTS manager_logins (
+    name        TEXT PRIMARY KEY,
+    pin_salt    TEXT NOT NULL,
+    pin_hash    TEXT NOT NULL,
+    created_by  TEXT,
+    updated_at  TIMESTAMPTZ DEFAULT NOW()
+);
 CREATE INDEX IF NOT EXISTS idx_pr_lines_pr ON pr_lines(pr_id);
 CREATE INDEX IF NOT EXISTS idx_pr_lines_part ON pr_lines(part_id);
 CREATE INDEX IF NOT EXISTS idx_pr_events_pr ON pr_events(pr_id);
